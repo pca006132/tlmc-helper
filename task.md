@@ -16,6 +16,9 @@ We should also log every album we worked on, as well as other information to `ve
 Log for tasks for one album should be indented by 2 spaces, so it can be differentiated easily.
 
 Whenever we log things or output to files for further auditing, we should write paths relative to the execution directory, i.e., prefix is `[circle]/ALBUM_DIRECTORY_NAME/`.
+All audit log should be logged to `verbose.log` as well, and `verbose.log` should also be logged to stdout.
+
+For performance reason, we should tag before writing the track to disc, and we should encode them in parallel.
 
 # Directory structures
 

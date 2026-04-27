@@ -3,16 +3,18 @@ use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::UTF_8;
 use flac_codec::decode::{FlacSampleReader, Metadata};
 use flac_codec::encode::{FlacSampleWriter, Options};
-use metaflac::Tag;
 use unrar::Archive;
 use walkdir::WalkDir;
+use tokio::task::JoinSet;
 
-fn main() {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     let exec_dir = match std::env::current_dir() {
         Ok(v) => v,
         Err(_) => return,
@@ -22,12 +24,12 @@ fn main() {
         Err(_) => return,
     };
 
-    if let Err(err) = run(&exec_dir, &mut logger) {
+    if let Err(err) = run(&exec_dir, &mut logger).await {
         let _ = logger.error(&format!("fatal: {err}"));
     }
 }
 
-fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
+async fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     let circles = fs::read_dir(exec_dir).map_err(ioe)?;
     for circle_entry in circles {
         let circle_entry = match circle_entry {
@@ -68,7 +70,7 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
             if rar_path.extension().and_then(OsStr::to_str) != Some("rar") {
                 continue;
             }
-            if let Err(err) = process_archive(exec_dir, logger, &circle_name, &rar_path) {
+            if let Err(err) = process_archive(exec_dir, logger, &circle_name, &rar_path).await {
                 logger.error(&format!(
                     "archive failed {}: {err}",
                     rel(exec_dir, &rar_path)
@@ -79,7 +81,7 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     Ok(())
 }
 
-fn process_archive(
+async fn process_archive(
     exec_dir: &Path,
     logger: &mut Logger,
     circle_name: &str,
@@ -97,7 +99,7 @@ fn process_archive(
     } else {
         logger.verbose("album directory already exists, skipping extract", true)?;
     }
-    process_album(exec_dir, logger, circle_name, rar_path, &album_dir)
+    process_album(exec_dir, logger, circle_name, rar_path, &album_dir).await
 }
 
 fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -112,7 +114,7 @@ fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn process_album(
+async fn process_album(
     exec_dir: &Path,
     logger: &mut Logger,
     circle_name: &str,
@@ -130,18 +132,18 @@ fn process_album(
     let pairs = pair_flac_cue(&flacs, &cues);
     for f in &flacs {
         if !pairs.iter().any(|(pf, _)| pf == f) {
-            logger.append_line("missing-cue.txt", &rel(exec_dir, f))?;
+            logger.append_audit("missing-cue.txt", &rel(exec_dir, f))?;
             logger.verbose(&format!("missing cue: {}", rel(exec_dir, f)), true)?;
         }
     }
     for c in &cues {
         if !pairs.iter().any(|(_, pc)| pc == c) {
-            logger.append_line("missing-flac.txt", &rel(exec_dir, c))?;
+            logger.append_audit("missing-flac.txt", &rel(exec_dir, c))?;
             logger.verbose(&format!("missing flac: {}", rel(exec_dir, c)), true)?;
         }
     }
     if pairs.len() > 1 {
-        logger.append_line("multi-disc.txt", &rel(exec_dir, album_dir))?;
+        logger.append_audit("multi-disc.txt", &rel(exec_dir, album_dir))?;
     }
     let fallback_date = parse_archive_date(rar_path);
     let is_multi_disc = pairs.len() > 1;
@@ -163,7 +165,9 @@ fn process_album(
             &cue_path,
             fallback_date.as_deref(),
             is_multi_disc,
-        ) {
+        )
+        .await
+        {
             logger.error(&format!(
                 "pair failed {} / {}: {err}",
                 rel(exec_dir, &flac_path),
@@ -174,7 +178,7 @@ fn process_album(
     Ok(())
 }
 
-fn process_pair(
+async fn process_pair(
     exec_dir: &Path,
     logger: &mut Logger,
     circle_name: &str,
@@ -188,7 +192,7 @@ fn process_pair(
     let cue = match parse_cue(&cue_text, fallback_date, circle_name) {
         Ok(v) => v,
         Err(err) => {
-            logger.append_line("corrupt-cuesheet.txt", &rel(exec_dir, cue_path))?;
+            logger.append_audit("corrupt-cuesheet.txt", &rel(exec_dir, cue_path))?;
             return Err(err);
         }
     };
@@ -204,22 +208,21 @@ fn process_pair(
     };
     fs::create_dir_all(&out_dir).map_err(ioe)?;
 
-    split_and_tag(exec_dir, logger, flac_path, &out_dir, &cue)?;
+    split_and_tag(exec_dir, logger, flac_path, &out_dir, &cue).await?;
     rename_old(flac_path).map_err(ioe)?;
     rename_old(cue_path).map_err(ioe)?;
     Ok(())
 }
 
-fn split_and_tag(
+async fn split_and_tag(
     exec_dir: &Path,
     logger: &mut Logger,
     flac_path: &Path,
     out_dir: &Path,
     cue: &CueData,
 ) -> Result<(), String> {
-    let source_data = fs::read(flac_path).map_err(ioe)?;
-    let mut reader =
-        FlacSampleReader::new_seekable(Cursor::new(source_data.as_slice())).map_err(fe)?;
+    let source_data = Arc::new(fs::read(flac_path).map_err(ioe)?);
+    let reader = FlacSampleReader::new_seekable(Cursor::new(source_data.as_slice())).map_err(fe)?;
     let sample_rate = u64::from(reader.sample_rate());
     if cue.tracks.is_empty() {
         return Ok(());
@@ -233,7 +236,8 @@ fn split_and_tag(
         starts.push(cue_index_to_sample(&t.index01, sample_rate));
     }
 
-    for (i, track) in cue.tracks.iter().enumerate() {
+    let mut jobs = Vec::new();
+    for (i, track) in cue.tracks.iter().cloned().enumerate() {
         let start = starts[i];
         let end = if i + 1 < starts.len() {
             starts[i + 1]
@@ -246,49 +250,59 @@ fn split_and_tag(
         let track_name = sanitize_file_part(track.title.as_deref().unwrap_or(""));
         let filename = format!("{:02} - {}.flac", track.id, track_name);
         let out_path = out_dir.join(filename);
-        extract_track(flac_path, &mut reader, start, end, &out_path)?;
-        write_tags(&out_path, cue, track).map_err(|e| e.to_string())?;
-        logger.verbose(&format!("wrote {}", rel(exec_dir, &out_path)), true)?;
+        jobs.push(TrackJob {
+            track,
+            start,
+            end,
+            out_path,
+        });
+    }
 
-        if cue.album_title.is_none() || track.title.is_none() || track.performer.is_none() {
-            logger.append_line(
-                "missing-info.txt",
-                &format!("{} track {:02}", rel(exec_dir, flac_path), track.id),
-            )?;
-            logger.verbose(
-                &format!("missing tag info: {} track {:02}", rel(exec_dir, flac_path), track.id),
-                true,
-            )?;
+    let mut set = JoinSet::new();
+    let cue = Arc::new(cue.clone());
+    for job in jobs {
+        let source_data = Arc::clone(&source_data);
+        let cue = Arc::clone(&cue);
+        set.spawn_blocking(move || process_track_job(source_data, cue, job));
+    }
+
+    while let Some(joined) = set.join_next().await {
+        let result = joined.map_err(|e| e.to_string())??;
+        logger.verbose(&format!("wrote {}", rel(exec_dir, &result.out_path)), true)?;
+        if result.missing_info {
+            let line = format!("{} track {:02}", rel(exec_dir, flac_path), result.track_id);
+            logger.append_audit("missing-info.txt", &line)?;
+            logger.verbose(&format!("missing tag info: {line}"), true)?;
         }
     }
     Ok(())
 }
 
-fn extract_track(
-    source: &Path,
-    reader: &mut FlacSampleReader<Cursor<&[u8]>>,
-    start: u64,
-    end: u64,
-    out_path: &Path,
-) -> Result<(), String> {
+fn process_track_job(source_data: Arc<Vec<u8>>, cue: Arc<CueData>, job: TrackJob) -> Result<TrackResult, String> {
+    let mut reader =
+        FlacSampleReader::new_seekable(Cursor::new(source_data.as_slice())).map_err(fe)?;
+    let start = job.start;
+    let end = job.end;
     let channels = u64::from(reader.channel_count());
     let total_interleaved_samples = (end - start) * channels;
     reader.seek(start).map_err(fe)?;
+    let options = build_writer_options(&cue, &job.track);
     let mut writer = FlacSampleWriter::create(
-        out_path,
-        Options::default(),
+        &job.out_path,
+        options,
         reader.sample_rate(),
         reader.bits_per_sample(),
         reader.channel_count(),
         Some(total_interleaved_samples),
     )
     .map_err(fe)?;
-    copy_samples(reader, &mut writer, total_interleaved_samples).map_err(fe)?;
+    copy_samples(&mut reader, &mut writer, total_interleaved_samples).map_err(fe)?;
     writer.finalize().map_err(fe)?;
-    if !source.exists() {
-        return Err("source vanished".to_string());
-    }
-    Ok(())
+    Ok(TrackResult {
+        out_path: job.out_path,
+        track_id: job.track.id,
+        missing_info: cue.album_title.is_none() || job.track.title.is_none() || job.track.performer.is_none(),
+    })
 }
 
 fn copy_samples<R, W>(
@@ -316,26 +330,23 @@ where
     Ok(())
 }
 
-fn write_tags(path: &Path, cue: &CueData, track: &TrackData) -> Result<(), String> {
-    let mut tag = Tag::read_from_path(path).unwrap_or_else(|_| Tag::new());
-    tag.set_vorbis("ARTIST", vec![track.performer.clone().unwrap_or_default()]);
-    tag.set_vorbis("TITLE", vec![track.title.clone().unwrap_or_default()]);
-    tag.set_vorbis("ALBUM", vec![cue.album_title.clone().unwrap_or_default()]);
-    tag.set_vorbis("TRACKNUMBER", vec![format!("{:02}", track.id)]);
-    tag.set_vorbis(
-        "ALBUMARTIST",
-        vec![cue.album_artist.clone().unwrap_or_default()],
-    );
+fn build_writer_options(cue: &CueData, track: &TrackData) -> Options {
+    let mut options = Options::default()
+        .tag("ARTIST", track.performer.clone().unwrap_or_default())
+        .tag("TITLE", track.title.clone().unwrap_or_default())
+        .tag("ALBUM", cue.album_title.clone().unwrap_or_default())
+        .tag("TRACKNUMBER", format!("{:02}", track.id))
+        .tag("ALBUMARTIST", cue.album_artist.clone().unwrap_or_default());
     if let Some(v) = cue.genre.as_ref() {
-        tag.set_vorbis("GENRE", vec![v.clone()]);
+        options = options.tag("GENRE", v);
     }
     if let Some(v) = cue.date.as_ref() {
-        tag.set_vorbis("DATE", vec![v.clone()]);
+        options = options.tag("DATE", v);
     }
     if let Some(v) = cue.comment.as_ref() {
-        tag.set_vorbis("COMMENT", vec![v.clone()]);
+        options = options.tag("COMMENT", v);
     }
-    tag.write_to_path(path).map_err(|e| e.to_string())
+    options
 }
 
 fn decode_cue(exec_dir: &Path, logger: &mut Logger, cue_path: &Path) -> Result<String, String> {
@@ -593,6 +604,7 @@ impl Logger {
         } else {
             format!("{msg}\n")
         };
+        print!("{line}");
         self.verbose.write_all(line.as_bytes()).map_err(ioe)
     }
 
@@ -602,9 +614,10 @@ impl Logger {
             .map_err(ioe)
     }
 
-    fn append_line(&mut self, file: &str, line: &str) -> Result<(), String> {
+    fn append_audit(&mut self, file: &str, line: &str) -> Result<(), String> {
         let mut f = open_append(self.exec_dir.join(file)).map_err(ioe)?;
-        f.write_all(format!("{line}\n").as_bytes()).map_err(ioe)
+        f.write_all(format!("{line}\n").as_bytes()).map_err(ioe)?;
+        self.verbose(&format!("audit {file}: {line}"), true)
     }
 }
 
@@ -612,7 +625,7 @@ fn open_append(path: PathBuf) -> Result<File, std::io::Error> {
     OpenOptions::new().create(true).append(true).open(path)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CueData {
     genre: Option<String>,
     date: Option<String>,
@@ -622,10 +635,25 @@ struct CueData {
     tracks: Vec<TrackData>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct TrackData {
     id: u32,
     title: Option<String>,
     performer: Option<String>,
     index01: String,
+}
+
+#[derive(Debug, Clone)]
+struct TrackJob {
+    track: TrackData,
+    start: u64,
+    end: u64,
+    out_path: PathBuf,
+}
+
+#[derive(Debug)]
+struct TrackResult {
+    out_path: PathBuf,
+    track_id: u32,
+    missing_info: bool,
 }
