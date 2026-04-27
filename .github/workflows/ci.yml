@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            os: windows-2022
+            bin_path: target/release/tlmc.exe
+          - name: MacOS 14
+            os: macos-14
+          - name: MacOS 13 x86_64
+            os: macos-13
+          - name: Linux x86_64
+            os: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: cargo build --verbose --release
+
+      - name: List release directory (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-ChildItem target/release | Format-Table -AutoSize
+
+      - name: Upload Windows executable
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlmc-windows-x86_64
+          path: ${{ matrix.bin_path }}

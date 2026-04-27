@@ -9,12 +9,11 @@ use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::UTF_8;
 use flac_codec::decode::{FlacSampleReader, Metadata};
 use flac_codec::encode::{FlacSampleWriter, Options};
+use rayon::prelude::*;
 use unrar::Archive;
 use walkdir::WalkDir;
-use tokio::task::JoinSet;
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() {
+fn main() {
     let exec_dir = match std::env::current_dir() {
         Ok(v) => v,
         Err(_) => return,
@@ -24,12 +23,12 @@ async fn main() {
         Err(_) => return,
     };
 
-    if let Err(err) = run(&exec_dir, &mut logger).await {
+    if let Err(err) = run(&exec_dir, &mut logger) {
         let _ = logger.error(&format!("fatal: {err}"));
     }
 }
 
-async fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
+fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     let circles = fs::read_dir(exec_dir).map_err(ioe)?;
     for circle_entry in circles {
         let circle_entry = match circle_entry {
@@ -70,7 +69,7 @@ async fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
             if rar_path.extension().and_then(OsStr::to_str) != Some("rar") {
                 continue;
             }
-            if let Err(err) = process_archive(exec_dir, logger, &circle_name, &rar_path).await {
+            if let Err(err) = process_archive(exec_dir, logger, &circle_name, &rar_path) {
                 logger.error(&format!(
                     "archive failed {}: {err}",
                     rel(exec_dir, &rar_path)
@@ -81,7 +80,7 @@ async fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     Ok(())
 }
 
-async fn process_archive(
+fn process_archive(
     exec_dir: &Path,
     logger: &mut Logger,
     circle_name: &str,
@@ -99,7 +98,7 @@ async fn process_archive(
     } else {
         logger.verbose("album directory already exists, skipping extract", true)?;
     }
-    process_album(exec_dir, logger, circle_name, rar_path, &album_dir).await
+    process_album(exec_dir, logger, circle_name, rar_path, &album_dir)
 }
 
 fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -114,7 +113,7 @@ fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-async fn process_album(
+fn process_album(
     exec_dir: &Path,
     logger: &mut Logger,
     circle_name: &str,
@@ -165,9 +164,7 @@ async fn process_album(
             &cue_path,
             fallback_date.as_deref(),
             is_multi_disc,
-        )
-        .await
-        {
+        ) {
             logger.error(&format!(
                 "pair failed {} / {}: {err}",
                 rel(exec_dir, &flac_path),
@@ -178,7 +175,7 @@ async fn process_album(
     Ok(())
 }
 
-async fn process_pair(
+fn process_pair(
     exec_dir: &Path,
     logger: &mut Logger,
     circle_name: &str,
@@ -208,13 +205,13 @@ async fn process_pair(
     };
     fs::create_dir_all(&out_dir).map_err(ioe)?;
 
-    split_and_tag(exec_dir, logger, flac_path, &out_dir, &cue).await?;
+    split_and_tag(exec_dir, logger, flac_path, &out_dir, &cue)?;
     rename_old(flac_path).map_err(ioe)?;
     rename_old(cue_path).map_err(ioe)?;
     Ok(())
 }
 
-async fn split_and_tag(
+fn split_and_tag(
     exec_dir: &Path,
     logger: &mut Logger,
     flac_path: &Path,
@@ -258,16 +255,17 @@ async fn split_and_tag(
         });
     }
 
-    let mut set = JoinSet::new();
     let cue = Arc::new(cue.clone());
-    for job in jobs {
-        let source_data = Arc::clone(&source_data);
-        let cue = Arc::clone(&cue);
-        set.spawn_blocking(move || process_track_job(source_data, cue, job));
-    }
+    let results: Vec<TrackResult> = jobs
+        .into_par_iter()
+        .map(|job| {
+            let source_data = Arc::clone(&source_data);
+            let cue = Arc::clone(&cue);
+            process_track_job(source_data, cue, job)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-    while let Some(joined) = set.join_next().await {
-        let result = joined.map_err(|e| e.to_string())??;
+    for result in results {
         logger.verbose(&format!("wrote {}", rel(exec_dir, &result.out_path)), true)?;
         if result.missing_info {
             let line = format!("{} track {:02}", rel(exec_dir, flac_path), result.track_id);
