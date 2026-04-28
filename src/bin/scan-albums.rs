@@ -139,7 +139,12 @@ fn scan_track(path: &Path) -> Result<Value, String> {
 }
 
 fn split_names(v: impl Into<String>) -> Vec<String> {
-    vec![v.into()]
+    v.into()
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
 fn insert_str(m: &mut Map<String, Value>, key: &str, value: Option<impl Into<String>>) {

@@ -1,59 +1,60 @@
-# TLMC One-Click Track Splitter (English)
+# TLMC User Guide (English)
 
-中文版（Chinese main README）: [README.md](README.md)
+中文说明: [README.md](README.md)
 
-> Note: this README is mostly vibed from `task.md`, adapted into user-facing instructions.
+## Required input layout (important)
 
-## What this tool does
+This tool expects TLMC-style directories. It does not try to auto-infer arbitrary layouts.
 
-This is a one-click tool for Touhou album conversion:
+- Run in a root directory that contains circle folders (`[Circle]` or `Circle`)
+- Each circle folder may contain:
+  - album `.rar` files
+  - extracted album directories
 
-- scan circle folders in the current directory
-- extract album `.rar` files
-- find and pair `.flac` + `.cue`
-- split full FLAC into per-track FLAC files
-- write common tags
+If the layout is not TLMC-style, grouping/parsing results may be wrong.
 
-## Folder layout before running
-
-Put the executable in a root directory that contains circle folders:
+Example layout:
 
 ```text
-root/
-  CircleA/
-    2026.04.28 [ABCD-0123] foo bar [c123].rar
-  CircleB/
-    2025.10.01 [WXYZ-0001] album name.rar
-  tlmc.exe
+MusicLibraryRoot/
+├── [RD-Sounds]/
+│   ├── 2024.05.03 [RDS-0001] Example Album [Reitaisai].rar
+│   └── 2024.05.03 [RDS-0002] Another Album [M3]/
+│       ├── disc.flac
+│       └── disc.cue
+└── Shining Symphony/
+    └── 2023.12.30 [SS-1234] Winter Works/
+        ├── CD1.flac
+        └── CD1.cue
 ```
 
-Circle folder names can be bracketed (`[CircleName]`) or plain (`CircleName`).
+Key points:
+- Run binaries from `MusicLibraryRoot`.
+- First-level folders must be circle folders.
+- Second-level entries are albums (`.rar` files or extracted folders).
 
-## How to use
+## What each binary does
 
-### One-click splitting (`split-album`)
+- `split-album`: extract, pair FLAC/CUE, split, initial tagging
+- `scan-albums`: scan existing tags -> `metadata.json`
+- `analyze-albums`: generate/update structured metadata files
+- `apply-tags`: write `update-metadata.json` back to tracks
 
-1. Run `split-album` (double-click exe on Windows).
-2. Wait until processing is done.
-3. Review `verbose.log`, `error.log`, and `audit.json` for manual follow-up.
+## Windows users: which `.exe` to click?
 
-### Metadata workflow (new binaries)
+In build output (usually `target/release`):
 
-1. Scan current tags:
-   - `scan-albums`
-   - output: `metadata.json`
-2. Build editable structure:
-   - `analyze-albums`
-   - if `structured.json` is missing, it generates `structured.json`
-3. Edit `structured.json` (rewrite rules, default genre, etc.).
-4. Generate update plan:
-   - run `analyze-albums` again
-   - if `structured.json` exists, it generates `update-metadata.json` and `structured-new.json`
-5. Apply updates:
-   - `apply-tags`
-   - applies `update-metadata.json` in parallel
+1. `split-album.exe` (optional; only if you need splitting)
+2. `scan-albums.exe`
+3. `analyze-albums.exe` (first run)
+4. edit `structured.json`
+5. `analyze-albums.exe` (second run)
+6. `apply-tags.exe`
 
-Command example (from project root):
+`.exe` files are directly clickable. `.bat` wrappers are not required here because all output is persisted to log/json files (`verbose.log`, `error.log`, `audit.json`).
+
+## CLI commands (optional)
+
 ```bash
 cargo run --bin scan-albums
 cargo run --bin analyze-albums
@@ -62,131 +63,126 @@ cargo run --bin analyze-albums
 cargo run --bin apply-tags
 ```
 
-## `structured.json` explained (manual edit file)
+## Main files you will use
 
-`structured.json` is the intermediate file that combines:
+- `metadata.json`: raw scanned snapshot
+- `structured.json`: main editable file
+- `structured-new.json`: rebuilt result for verification
+- `update-metadata.json`: patch that `apply-tags` consumes
+- `audit.json`: all review-needed findings
+- `verbose.log`: processing details
+- `error.log`: hard errors
 
-- analysis output from `metadata.json`
-- user-editable rewrite/default rules
+## Editing strategy for `structured.json` (core workflow)
 
-Flow:
+For each circle:
 
-1. First `analyze-albums` run creates `structured.json`.
-2. You edit it.
-3. Second `analyze-albums` run reads it and creates `update-metadata.json`, plus `structured-new.json` (post-update structure snapshot).
+1. Inspect `all album artists` and `all artists`.
+2. Identify variants of the same person/group name (typos, aliases, formatting).
+3. Add rewriting rules to unify them.
+4. Run `analyze-albums` again.
+5. Check `structured-new.json` and confirm unwanted variants are gone.
 
-Main fields (per circle):
+Repeat until the aggregated lists look clean.
 
-- `all album artists` / `all artists` / `all genres`
-  - aggregated, deduplicated, sorted candidates
-- `album artists rewriting` / `artists rewriting` / `genre rewriting`
-  - rewrite rules in form:
-  - `{ "from": ["A", "B"], "to": ["C"] }`
-  - for singular artist/album-artist tags, preprocessing split is used to generate extra rules:
-    - trim leading `Vo.`
-    - split by `feat.`, `+`, ` x `, ` & `, `/`, `，`, `、`, `;`, `,`
-    - do not split inside parentheses (`()` / `（）`)
-- `default genre`
-  - optional fallback genre for tracks missing genre
-- `albums`
-  - album-level data
-  - `album artists`: album-level artist list
-  - `discs`: track grouping by disc (`TRACK_PATH` -> track fields)
+## Rewriting rules (one-pass)
 
-Minimal example:
+Format:
 
 ```json
-{
-  "CircleName": {
-    "all album artists": ["AAA", "Aaa"],
-    "album artists rewriting": [
-      { "from": ["AAA", "Aaa"], "to": ["AAA"] }
-    ],
-    "all artists": ["X", "Y"],
-    "artists rewriting": [],
-    "all genres": ["Trance", "Electronic"],
-    "genre rewriting": [],
-    "default genre": "Electronic",
-    "albums": {}
-  }
-}
+{ "from": ["Old Variant"], "to": ["Target A", "Target B"] }
 ```
 
-Editing tips:
+Rules are one-pass per token (not recursive chains).
 
-1. Start with rewrite rules (`* rewriting`) first.
-2. Set `default genre` only if you want missing genres auto-filled.
-3. Review `albums -> ... -> discs` if disc grouping looks suspicious.
-4. Re-run `analyze-albums` after edits to produce `update-metadata.json` and `structured-new.json`.
+Why we do not rewrite until saturation:
 
-Behavior:
+- Some names are genuinely ambiguous; automatic multi-pass rewriting can over-merge into wrong targets.
+- One-pass + ordered early-match gives you precise control: place a "keep as-is" or preferred mapping rule earlier to stop later rules from touching that token.
+- This lets users intentionally skip downstream matches when needed.
 
-- no command-line arguments required
-- verbose messages go to both stdout and `verbose.log`
-- errors are recorded in `error.log` and processing continues when possible
+More complex example (aligned with `task.md`):
 
-## What happens after conversion
+```json
+[
+  { "from": ["Aky"], "to": ["Aki"] },
+  { "from": ["Aki", "AKI"], "to": ["Akiha"] },
+  { "from": ["Akiha x S"], "to": ["Akiha", "S"] }
+]
+```
 
-- `.rar` is extracted to a same-name folder (without `.rar`) only when that folder does not already exist
-- album folders are processed even if there is no matching `.rar` file
-- FLAC/CUE are paired and processed
-- output files are named `TRACK_ID - TRACK_NAME.flac`
-- original processed `.flac` and `.cue` are renamed to `*.old`
-- folders containing `.flac.old` or `.cue.old` are treated as already processed and skipped
-- for multi-disc albums, split tracks are placed in subfolders by FLAC name
+- `["Aky"]` -> `["Aki"]` (does not continue to `Akiha`)
+- `["Aki"]` -> `["Akiha"]`
+- `["Akiha x S"]` -> `["Akiha", "S"]`
 
-## Audit outputs and JSON structure
+Potential chain issues are reported as `rewrite_chain_warning` in `audit.json`.
 
-Outputs are generated in the execution directory. Audit paths are relative for easier triage.
+## Other important behavior
 
-- `verbose.log`
-  - detailed process log (also printed to stdout)
-  - includes pairings and audit events
-- `error.log`
-  - hard errors (failed album/pair processing)
-  - check this first
+- `scan-albums` treats `;` as a multi-artist separator.
+- `apply-tags` joins multi-artist values with `;`.
+- Disc numbering is inferred from `structured.json` disc order (first disc map = Disc 1, etc.).
+
+## Recommended checks after each run
+
 - `audit.json`
-  - unified audit output (pretty JSON)
-  - shape example:
-```json
-{
-  "missing_cue": ["circle/album/foo.flac"],
-  "missing_flac": ["circle/album/foo.cue"],
-  "multi_disc": ["circle/album"],
-  "corrupt_cuesheet": ["circle/album/foo.cue"],
-  "missing_info": ["circle/album/foo.flac track 01"],
-  "invalid_names": ["circle_or_album_path"],
-  "ambiguous_pairing": ["circle/album | flac=... | cues=..."],
-  "corrupted_tracks": ["circle/album/foo.mp3"],
-  "disc_classification": ["circle/album"],
-  "different_album_artist": ["circle/album"]
-}
-```
-  - field meanings:
-    - `missing_cue`: flac without cue
-    - `missing_flac`: cue without flac
-    - `multi_disc`: album has multiple pair groups
-    - `corrupt_cuesheet`: cue invalid (including zero/negative duration)
-    - `missing_info`: missing key tag fields
-    - `invalid_names`: invalid circle/album directory names
-    - `ambiguous_pairing`: non-unique cue/flac association
-    - `corrupted_tracks`: unreadable audio during scan
-    - `disc_classification`: disc grouping fallback triggered
-    - `different_album_artist`: inconsistent album-artist signals
+- `error.log`
+- `structured-new.json` (especially after rewriting edits)
 
-## After the tool finishes
+## `audit.json` field reference
 
-Recommended checklist:
+- `missing_cue`: FLAC exists but matching CUE is missing.  
+  Action: fix naming/pairing first, then rerun `split-album`. It can also be a false positive (see "Common false-positive scenario" below).
+- `missing_flac`: CUE exists but matching FLAC is missing.  
+  Action: check missing files or naming mismatch, then rerun `split-album`. It can also be a false positive (see "Common false-positive scenario" below).
+- `multi_disc`: multiple FLAC/CUE pairs detected in one album folder.  
+  Action: review disc separation and album naming manually.
+- `corrupt_cuesheet`: CUE parse failed, non-positive track duration, or last offset exceeds FLAC duration.  
+  Action: fix naming or CUE content, then rerun `split-album`. It can also be a false positive (see "Common false-positive scenario" below).
+- `missing_info`: missing metadata fields (commonly artists).  
+  Action: complete metadata in `structured.json` or source tags.
+- `invalid_names`: directory names do not match expected parseable format.  
+  Action: rename directories to TLMC-style format and rerun `split-album` (and then downstream steps).
+- `ambiguous_pairing`: FLAC/CUE matching is ambiguous.  
+  Action: rename files so pairing is unique, then rerun `split-album`.
+- `corrupted_tracks`: unreadable/corrupted audio during scanning.  
+  Action: if this comes from split outputs, fix source/naming and rerun `split-album`; if it is scan-only corruption, replace/repair files and rerun `scan-albums`.
+- `disc_classification`: fallback disc-classification rule was used.  
+  Action: verify `discs` grouping in `structured.json`.
+- `different_album_artist`: inconsistent album artists inside album, or mismatch against circle expectation.  
+  Action: unify names via rewriting rules or manual edits.
+- `rewrite_chain_warning`: potential incomplete chain in one-pass rewriting rules.  
+  Action: flatten chain rules so one step maps directly to desired output.
 
-1. Check `error.log`.
-2. Fix entries under `corrupt_cuesheet` in `audit.json`.
-3. Resolve `missing_cue` / `missing_flac` in `audit.json`.
-4. Review `multi_disc` / `ambiguous_pairing` in `audit.json`.
-5. Fill metadata for entries under `missing_info` in `audit.json`.
-6. Spot-check playback/cut points on several albums.
-7. Delete `*.old` originals only after verification.
+  Example (why this is bad):
+  ```json
+  [
+    { "from": ["Aky"], "to": ["Aki"] },
+    { "from": ["Aki"], "to": ["Akiha"] }
+  ]
+  ```
+  With one-pass rewriting, `Aky` becomes only `Aki` and does not continue to `Akiha`, so intermediate names remain in aggregated lists.  
+  Fix: flatten into one-step mapping, for example:
+  ```json
+  [
+    { "from": ["Aky", "Aki"], "to": ["Akiha"] }
+  ]
+  ```
 
-If you fix cuesheets and want to rerun, note that folders with `.flac.old` / `.cue.old` are skipped. Move or rename those `.old` files first, then run again.
-If cue is missing `DATE` or top-level `PERFORMER`, the tool may need directory names as fallback metadata; if those names are invalid, it logs to `error.log` and skips that album.
-If cue timing yields zero/negative track duration, it is treated as corrupt and logged under `corrupt_cuesheet` in `audit.json`.
-`metadata.json`, `structured.json`, `update-metadata.json`, and `audit.json` are all pretty-printed JSON.
+### Common false-positive scenario (important)
+
+`missing_cue` / `missing_flac` / `corrupt_cuesheet` are not always real data issues.
+
+Typical case: an album folder already contains split tracks, and one split track name is similar to the album name. The program may incorrectly pair an album-level CUE with that short split track. Then:
+
+- that track may be reported as `corrupt_cuesheet` (because the CUE expects a much longer full-album audio file),
+- and other tracks in the same album may appear as `missing_cue` or `missing_flac`.
+
+In this situation, if the folder is already split-track output, removing (or moving out) the mismatched album-level CUE is usually enough, because no further splitting is needed there.  
+Then rerun `split-album` to clear the false positives.
+
+## Safety
+
+1. Back up first.
+2. Validate on a small subset before full library runs.
+3. Spot-check `update-metadata.json` before `apply-tags`.

@@ -152,6 +152,7 @@ fn check_rule_chain(
     rules: &[RewriteRule],
     logger: &mut Logger,
 ) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
     for (i, r1) in rules.iter().enumerate() {
         for (j, r2) in rules.iter().enumerate() {
             if i == j {
@@ -160,10 +161,10 @@ fn check_rule_chain(
             if r1.to.iter().any(|v| r2.from.iter().any(|f| f == v)) {
                 let left = serde_json::to_string(r1).map_err(|e| e.to_string())?;
                 let right = serde_json::to_string(r2).map_err(|e| e.to_string())?;
-                logger.append_audit(
-                    "rewrite_chain_warning",
-                    &format!("circle={circle} set={rule_set} rule_a={left} rule_b={right}"),
-                )?;
+                let line = format!("circle={circle} set={rule_set} rule_a={left} rule_b={right}");
+                if seen.insert(line.clone()) {
+                    logger.append_audit("rewrite_chain_warning", &line)?;
+                }
             }
         }
     }

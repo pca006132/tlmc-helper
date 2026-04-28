@@ -1,57 +1,61 @@
-# TLMC 一键分轨工具（简体中文）
+# TLMC 工具使用说明（简体中文）
 
-English version: [README_EN.md](README_EN.md)
+English: [README_EN.md](README_EN.md)
 
-> 说明：本 README 内容主要是根据 `task.md` vibed 出来的用户文档，目标是给普通用户快速上手。
+## 先看这个：目录结构必须符合 TLMC 约定
 
-## 这是什么
+本工具**不做智能猜目录**，默认你已经按 TLMC 风格整理好目录。
 
-这是一个给东方同人专辑用的“一键分轨”工具。  
-它会在当前目录下扫描社团文件夹，解压 `.rar` 专辑包，读取 `.cue`，把整轨 `.flac` 切成单曲，并写入常见标签。
+- 在一个根目录下放多个社團文件夹（可用 `[社團名]` 或 `社團名`）
+- 每个社團目录下可以有：
+  - 专辑 `.rar`
+  - 已解压的专辑文件夹
 
-## 使用前准备
+如果目录结构不符合，分析结果可能不符合预期。
 
-1. 把可执行文件放在一个“总目录”中。
-2. 总目录下每个子目录代表一个社团（可以是 `[CIRCLE_NAME]`，也可以是不带 `[]` 的普通名称）。
-3. 每个社团目录里可以放 `.rar` 专辑文件，也可以直接放已解压的专辑目录（两者都支持）。
-4. 建议先备份一份原始资源（尤其是首次使用时）。
-
-目录示意：
+目录结构示例：
 
 ```text
-总目录/
-  社团A/
-    2026.04.28 [ABCD-0123] foo bar [c123].rar
-  社团B/
-    2025.10.01 [WXYZ-0001] album name.rar
-  tlmc.exe
+音乐库根目录/
+├── [RD-Sounds]/
+│   ├── 2024.05.03 [RDS-0001] Example Album [Reitaisai].rar
+│   └── 2024.05.03 [RDS-0002] Another Album [M3]/
+│       ├── disc.flac
+│       └── disc.cue
+└── 彩音 ～xi-on～/
+    └── 2023.12.30 [XIOS-1234] Winter Works/
+        ├── CD1.flac
+        └── CD1.cue
 ```
 
-## 如何使用
+要点：
+- 运行目录是“音乐库根目录”。
+- 第一层必须是社團目录。
+- 第二层是专辑（`.rar` 或已解压目录）。
 
-### 传统一键分轨（split-album）
+## 4 个程序分别做什么
 
-1. 运行 `split-album`（Windows 可双击 exe）。
-2. 等待处理完成。
-3. 打开 `verbose.log`、`error.log` 和 `audit.json`，确认是否有需要人工处理的专辑。
+- `split-album`：解包、配对 FLAC/CUE、分轨并写初始标签
+- `scan-albums`：扫描已有音频标签 -> `metadata.json`
+- `analyze-albums`：生成/更新可编辑结构（`structured*.json`）
+- `apply-tags`：把 `update-metadata.json` 回写到音频文件
 
-### 元数据工作流（新二进制）
+## Windows 用户：点击哪个 exe？
 
-1. 扫描现有音频元数据：
-   - `scan-albums`
-   - 输出：`metadata.json`
-2. 分析并生成可编辑结构：
-   - `analyze-albums`
-   - 当 `structured.json` 不存在时，生成 `structured.json`
-3. 编辑 `structured.json`（人工调整重写规则、默认流派等）。
-4. 生成待更新清单：
-   - 再次运行 `analyze-albums`
-   - 当 `structured.json` 已存在时，生成 `update-metadata.json` 和 `structured-new.json`
-5. 应用标签：
-   - `apply-tags`
-   - 按 `update-metadata.json` 并行回写标签
+在构建输出目录（通常是 `target/release`）里：
 
-命令示例（在项目根目录）：
+1. `split-album.exe`（可选，如果你要从整轨+CUE分轨）
+2. `scan-albums.exe`
+3. `analyze-albums.exe`（第一次）
+4. 编辑 `structured.json`
+5. `analyze-albums.exe`（第二次）
+6. `apply-tags.exe`
+
+`.exe` 可以直接双击，不需要 `.bat`。  
+日志和审计都写文件（`verbose.log` / `error.log` / `audit.json`），即使窗口关闭也不会丢记录。
+
+## 命令行方式（可选）
+
 ```bash
 cargo run --bin scan-albums
 cargo run --bin analyze-albums
@@ -60,128 +64,127 @@ cargo run --bin analyze-albums
 cargo run --bin apply-tags
 ```
 
-## `structured.json` 说明（需要人工编辑）
+## 你会看到的文件
 
-`structured.json` 是“分析结果 + 重写规则配置”的中间文件。  
-第一次运行 `analyze-albums` 会生成它；你修改后再次运行 `analyze-albums` 会生成 `update-metadata.json`，并输出更新后的结构快照 `structured-new.json`。
+- `metadata.json`：扫描得到的原始标签快照
+- `structured.json`：你要编辑的主文件
+- `structured-new.json`：按当前规则推导出的新结构（用来复查）
+- `update-metadata.json`：实际待写回的差异补丁
+- `audit.json`：所有需要人工关注的问题
+- `verbose.log`：详细过程日志
+- `error.log`：硬错误
 
-核心结构（按圈组织）：
+## `structured.json` 编辑重点（非常重要）
 
-- `all album artists` / `all artists` / `all genres`
-  - 当前圈聚合出来的候选值（已去重、排序）
-- `album artists rewriting` / `artists rewriting` / `genre rewriting`
-  - 重写规则列表，格式为：
-  - `{ "from": ["A", "B"], "to": ["C"] }`
-  - 对单值艺术家字段，程序会先做预处理拆分（用于自动生成一些重写规则）：
-    - 先去掉开头 `Vo.`
-    - 再按 `feat.`、`+`、` x `、` & `、`/`、`，`、`、`、`;`、`,` 拆分
-    - 括号内不拆分（`()` / `（）`）
-- `default genre`
-  - 可选。用于补全没有 genre 的曲目
-- `albums`
-  - 每张专辑的信息
-  - `album artists`: 专辑级艺术家列表
-  - `discs`: 分盘后的曲目映射（`TRACK_PATH` -> 曲目信息）
+1. 先看每个社團下的：
+   - `all album artists`
+   - `all artists`
+2. 找出同一人/同一组合的不同写法、错别字、别名。
+3. 在 rewriting 里写规则统一这些名字。
+4. 再跑一次 `analyze-albums`。
+5. 打开 `structured-new.json`，确认不想要的旧写法是否还存在。
 
-最小示例：
+如果还在，继续补 rewriting 规则并重复上面步骤。
+
+## rewriting 规则（单轮）
+
+格式：
 
 ```json
-{
-  "CircleName": {
-    "all album artists": ["AAA", "Aaa"],
-    "album artists rewriting": [
-      { "from": ["AAA", "Aaa"], "to": ["AAA"] }
-    ],
-    "all artists": ["X", "Y"],
-    "artists rewriting": [],
-    "all genres": ["Trance", "Electronic"],
-    "genre rewriting": [],
-    "default genre": "Electronic",
-    "albums": {}
-  }
-}
+{ "from": ["旧写法"], "to": ["新写法A", "新写法B"] }
 ```
 
-编辑建议：
+规则是**单轮匹配**，不会无限链式继续改。
 
-1. 先检查并修正 `* rewriting` 规则（这是最关键的）。
-2. 需要补流派时填写 `default genre`。
-3. 如分盘结果可疑，检查 `albums -> ... -> discs` 的分组。
-4. 改完后再运行一次 `analyze-albums` 生成 `update-metadata.json` 与 `structured-new.json`。
+为什么不做到“重写到收敛（saturation）”：
 
-程序特性：
+- 有些名字本身有歧义，自动多轮重写可能会过度合并到错误目标。
+- 单轮 + 早匹配优先可以让你精确控制：把“需要保留的写法”放在前面的规则里先匹配到，即可阻止后续规则继续改写。
+- 这等价于你可以显式写“提前命中且不再继续”的策略，避免误伤。
 
-- 不需要命令行参数
-- 处理信息同时输出到屏幕和 `verbose.log`
-- 出错会记到 `error.log`，尽量不中断整体流程
+复杂示例（与 `task.md` 一致）：
 
-## 转换后会发生什么
+```json
+[
+  { "from": ["Aky"], "to": ["Aki"] },
+  { "from": ["Aki", "AKI"], "to": ["Akiha"] },
+  { "from": ["Akiha x S"], "to": ["Akiha", "S"] }
+]
+```
 
-- 只有在“同名目录不存在”时，`.rar` 才会被解压到同名目录（去掉 `.rar` 后缀）。
-- 即使没有对应 `.rar`，已有专辑目录也会被直接处理。
-- 会查找并配对 `.flac` 与 `.cue`。
-- 成功分轨后生成：`TRACK_ID - TRACK_NAME.flac`
-- 处理过的原始 `.flac` 和 `.cue` 会改名为 `*.old`
-- 如果目录中已存在 `.flac.old` 或 `.cue.old`，会判定为已处理并跳过该目录。
-- 多盘（多组 flac-cue）时会放入子目录（按原 flac 文件名分开）
+- `["Aky"]` -> `["Aki"]`（不会继续变成 `Akiha`）
+- `["Aki"]` -> `["Akiha"]`
+- `["Akiha x S"]` -> `["Akiha", "S"]`
 
-## 审计输出说明（重点）
+如果规则存在这种“还可以继续改”的链，`audit.json` 里会有 `rewrite_chain_warning` 提示你检查。
 
-程序会在执行目录生成以下内容，且审计路径均为相对路径，便于人工排查：
+## 其他关键行为
 
-- `verbose.log`
-  - 详细处理日志（也会输出到控制台）
-  - 包含专辑处理过程、配对结果、审计记录等
-- `error.log`
-  - 错误日志（例如某个专辑/某个配对失败）
-  - 先看这个文件定位硬错误
+- `scan-albums` 读取多艺术家时把 `;` 当分隔符。
+- `apply-tags` 写回多艺术家时也用 `;` 拼接。
+- 盘号由 `structured.json` 的 `discs` 顺序自动推断（第 1 组是 Disc 1，以此类推）。
+
+## 审计建议
+
+每次运行后至少检查：
+
 - `audit.json`
-  - 统一审计文件（美化格式 JSON）
-  - 结构示例：
-```json
-{
-  "missing_cue": ["circle/album/foo.flac"],
-  "missing_flac": ["circle/album/foo.cue"],
-  "multi_disc": ["circle/album"],
-  "corrupt_cuesheet": ["circle/album/foo.cue"],
-  "missing_info": ["circle/album/foo.flac track 01"],
-  "invalid_names": ["circle_or_album_path"],
-  "ambiguous_pairing": ["circle/album | flac=... | cues=..."],
-  "corrupted_tracks": ["circle/album/foo.mp3"],
-  "disc_classification": ["circle/album"],
-  "different_album_artist": ["circle/album"]
-}
-```
-  - 不同字段含义：
-    - `missing_cue`: flac 缺 cue
-    - `missing_flac`: cue 缺 flac
-    - `multi_disc`: 多盘专辑（多组配对）
-    - `corrupt_cuesheet`: cue 内容或时间无效（含 0/负时长）
-    - `missing_info`: 缺少关键标签信息
-    - `invalid_names`: 圈名/专辑目录名不符合预期
-    - `ambiguous_pairing`: 配对存在多候选
-    - `corrupted_tracks`: 扫描阶段无法读取的音频文件
-    - `disc_classification`: 分盘规则触发人工确认
-    - `different_album_artist`: 专辑艺术家不一致或与圈名不匹配
+- `error.log`
+- `structured-new.json`（在改名规则后）
 
-## 全部跑完后你该做什么
+## `audit.json` 字段说明（逐项）
 
-建议按这个顺序检查：
+- `missing_cue`：有 FLAC 但找不到对应 CUE。  
+  处理：先检查/修正命名与配对，再重跑 `split-album`。也可能是误报（见下方“常见误报场景”）。
+- `missing_flac`：有 CUE 但找不到对应 FLAC。  
+  处理：先检查文件是否缺失或命名不一致，再重跑 `split-album`。也可能是误报（见下方“常见误报场景”）。
+- `multi_disc`：同一专辑目录里识别出多组 FLAC/CUE。  
+  处理：检查是否需要手工确认分盘和专辑名。
+- `corrupt_cuesheet`：CUE 解析失败、轨道时长非正、或最后轨道偏移超过 FLAC 时长。  
+  处理：修复命名或 CUE 后重跑 `split-album`。也可能是误报（见下方“常见误报场景”）。
+- `missing_info`：标签信息缺失（常见是 artists）。  
+  处理：在 `structured.json` 或源文件标签中补全。
+- `invalid_names`：目录命名不符合预期（社團名/专辑名无法正确解析）。  
+  处理：修正目录名后重跑 `split-album`（以及后续流程）。
+- `ambiguous_pairing`：FLAC 与 CUE 的关联有歧义，无法自动决定。  
+  处理：改文件名让配对关系唯一后，重跑 `split-album`。
+- `corrupted_tracks`：扫描时音频文件损坏或不可读。  
+  处理：若来源于分轨产物，先修复命名/源文件后重跑 `split-album`；若只是扫描阶段发现，替换/修复后重跑 `scan-albums`。
+- `disc_classification`：`analyze-albums` 使用了回退分盘规则（需要人工确认）。  
+  处理：检查 `structured.json` 的 `discs` 分组是否正确。
+- `different_album_artist`：同专辑内 album artists 不一致，或与社團名关系异常。  
+  处理：在 rewriting 规则里统一，或手工调整结构数据。
+- `rewrite_chain_warning`：重写规则可能存在链式不完整（单轮重写下可能改不彻底）。  
+  处理：把链式规则扁平化，确保一步到目标写法。
 
-1. 先看 `error.log`，确认是否有失败项目。
-2. 看 `audit.json` 的 `corrupt_cuesheet`，修复或替换损坏 cue 后可重跑。
-3. 看 `audit.json` 的 `missing_cue` / `missing_flac`，补齐缺失文件。
-4. 看 `audit.json` 的 `multi_disc` / `ambiguous_pairing`，确认配对与多盘结构。
-5. 看 `audit.json` 的 `missing_info`，补全曲目标签（标题、表演者等）。
-6. 抽查若干专辑试听，确认切点与曲目顺序正确。
-7. 确认没问题后，再决定是否删除 `*.old` 原始文件。
+  示例（为什么不好）：
+  ```json
+  [
+    { "from": ["Aky"], "to": ["Aki"] },
+    { "from": ["Aki"], "to": ["Akiha"] }
+  ]
+  ```
+  在单轮重写里，`Aky` 只会变成 `Aki`，不会继续变成 `Akiha`，所以结果里会残留中间态名字，导致聚合名单不干净。  
+  解决：改成一步到位，例如：
+  ```json
+  [
+    { "from": ["Aky", "Aki"], "to": ["Akiha"] }
+  ]
+  ```
 
-## 注意事项
+### 常见误报场景（重点）
 
-- 程序会重命名原始 `flac/cue` 为 `*.old`，请先确认你有备份策略。
-- 建议在整理副本上运行，避免直接对唯一原始库操作。
-- 如果想“修完问题再跑一遍”，可以保留日志文件作为待办清单。
-- **修 cue 后重跑建议**：如果该目录已经生成过 `.flac.old/.cue.old`，程序会跳过该目录。你可以先把这些 `.old` 文件移走（或恢复文件名），再重跑。
-- 如果 cue 缺少 `DATE` 或顶层 `PERFORMER`，程序会尝试从目录名补信息；当目录名无效且无法补信息时，会记 `error.log` 并跳过该专辑。
-- 如果 cue 的轨道时间计算出 0 或负时长，会视为损坏 cue，记录到 `audit.json` 的 `corrupt_cuesheet` 并跳过该配对。
-- `metadata.json`、`structured.json`、`update-metadata.json`、`audit.json` 都是美化（pretty）JSON，方便人工编辑和审查。
+`missing_cue` / `missing_flac` / `corrupt_cuesheet` 不一定总是实际问题。  
+典型场景：专辑里已经有“分好轨的单曲文件”，而某首单曲文件名刚好和专辑名接近；程序可能把专辑级 CUE 错配到单曲上，导致：
+
+- 该单曲被报 `corrupt_cuesheet`（因为 CUE 期望的是整轨长音频）；
+- 同专辑其他文件被连带报 `missing_cue` 或 `missing_flac`。
+
+遇到这种情况，如果该目录本来就已经是分轨结果，通常直接移除（或移走）误配对的专辑级 CUE 就够了；因为本来就不需要再分轨。  
+处理后再重跑 `split-album`，通常可消除误报。
+
+## 安全建议
+
+1. 先备份再批量处理。
+2. 先小范围跑通流程再全量执行。
+3. `apply-tags` 前抽样检查补丁内容与目标专辑。

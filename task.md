@@ -1,3 +1,488 @@
+# TLMC Current Specification
+
+This document is the single current specification.
+
+## Terms
+
+- Circle (Touhou context): 社團 / group.
+
+## Required Input Layout
+
+The tool assumes TLMC-style directory layout. This is not auto-detected.
+
+- Run binaries in a root directory containing circle folders.
+- Circle folder names may be:
+  - `[CircleName]`
+  - `CircleName`
+- Circle folders may contain:
+  - album archives (`.rar`)
+  - extracted album directories
+
+Users are expected to keep this structure stable.
+
+## Binaries
+
+1. `split-album`
+2. `scan-albums`
+3. `analyze-albums`
+4. `apply-tags`
+
+## Logging
+
+- `verbose.log`: detailed log; also mirrored to stdout.
+- `error.log`: hard failures.
+- `audit.json`: pretty JSON audit arrays.
+
+Audit fields:
+- `missing_cue`
+- `missing_flac`
+- `multi_disc`
+- `corrupt_cuesheet`
+- `missing_info`
+- `invalid_names`
+- `ambiguous_pairing`
+- `corrupted_tracks`
+- `disc_classification`
+- `different_album_artist`
+- `rewrite_chain_warning`
+
+All logged paths are relative to execution directory.
+
+## `split-album`
+
+### Discovery/extraction
+
+- Process extracted album folders even if there is no `.rar`.
+- Extract `.rar` only when target folder does not already exist.
+- Skip albums containing any `.flac.old` or `.cue.old`.
+
+### FLAC/CUE pairing
+
+Pairing priority:
+1. Single FLAC + single CUE.
+2. Exact filename stem match (case-insensitive).
+3. Non-ambiguous substring relation.
+
+If ambiguous, write detail to `audit.json.ambiguous_pairing` and skip that ambiguous pair.
+
+### Cue decode/parse/validation
+
+- Decode with `chardetng`.
+- Parse with custom parser.
+- Treat as corrupt if:
+  - parse fails
+  - any track duration <= 0
+  - last track offset exceeds FLAC duration
+- Corrupt entries go to `audit.json.corrupt_cuesheet`.
+
+### Tag fallback behavior
+
+- DATE fallback:
+  1. archive filename date
+  2. album folder date token
+- ALBUMARTIST fallback:
+  - circle folder name
+
+If fallback requires invalid directory name, log to `error.log` and skip album.
+
+### Output
+
+- Output track names: `TRACK_ID - TRACK_NAME.flac`
+- Multi-pair album outputs to subfolder per FLAC stem.
+- Encode in parallel.
+- Apply tags before track write (single write per track).
+- Rename source FLAC/CUE to `.old` after success.
+
+## `scan-albums`
+
+- Scan `flac`, `mp3`, `m4a` via `audiotags`.
+- Parallel scanning.
+- Optional `scan-filter.txt` (one circle per line).
+- Without filter: scan all circles under current root.
+- Log processed album paths to `verbose.log`.
+- Corrupted tracks -> `audit.json.corrupted_tracks`.
+
+### `metadata.json` format
+
+```json
+{
+  "TRACK_PATH": {
+    "Title": "VALUE",
+    "Artists": ["VALUE"],
+    "Date": "VALUE",
+    "Year": "VALUE",
+    "Album artists": ["VALUE"],
+    "Album title": "VALUE",
+    "Track number": 1,
+    "Total tracks": 10,
+    "Disc number": 1,
+    "Total discs": 1,
+    "Genre": "VALUE",
+    "Comment": "VALUE"
+  }
+}
+```
+
+All keys optional per track.
+`Artists` / `Album artists` parse `;` as separator.
+
+## `analyze-albums`
+
+### Mode
+
+- If `structured.json` missing: analysis mode.
+- Otherwise: update mode.
+
+### Analysis mode (`metadata.json` -> `structured.json`)
+
+#### Path grouping
+
+- Parse track path to get `(circle, album_folder)`.
+- Display album name derives from folder by stripping:
+  - leading date token
+  - leading `[catalog]`
+  - trailing `[event]`
+- If single-disc album has one consistent non-empty album-title tag and differs from derived name, prefer the tag value.
+- If collisions occur, disambiguate with `(<album_folder_name>)`.
+
+#### Disc classification
+
+1. Same album title + no disc numbers -> disc 1.
+2. Use explicit disc numbers first.
+3. Remaining tracks grouped by album title, assigned new consecutive disc numbers after existing numbers.
+
+If rule 3 is used, log album path to `audit.json.disc_classification`.
+
+#### Aggregation checks
+
+- Aggregate per-circle:
+  - all album artists
+  - all artists
+  - all genres
+- Missing track artists -> `audit.json.missing_info`.
+- Album artist inconsistency/mismatch -> `audit.json.different_album_artist`.
+
+#### Artist preprocessing (singular field only)
+
+For singular artist/album-artist values:
+1. Trim leading `Vo.`
+2. Split by: `feat.`, `+`, ` x `, ` & `, `/`, `，`, `、`, `;`, `,`
+3. Do not split inside `()` or `（）`
+4. Trim non-empty tokens
+
+If preprocessing changes singular value, add rewriting rule:
+- `from`: original singular value
+- `to`: processed token list
+
+#### Normalization-based rule generation
+
+Normalization used only for candidate grouping:
+- lowercase
+- `'` `“` `”` -> `"`
+- `＊` -> `*`
+
+If multiple names normalize equal in a circle:
+- generate rewriting rule to lexicographically smallest original variant
+- this chosen value may still be non-canonical; user edits later
+
+Rules are deduplicated before output.
+
+### Rewriting semantics (one-pass)
+
+For each name token:
+- match rules from top to bottom
+- first matched `from` replaces token with rule `to`
+- replaced outputs are not rewritten again
+- deduplicate final output list
+
+This is intentionally one-pass (not chain recursion).
+
+### Rewrite chain warning
+
+When reading `structured.json`, detect if one rule output can match another rule input in same rule set.
+Log such potentially incomplete rule chains to `audit.json.rewrite_chain_warning` (deduplicated entries).
+
+### Complex rewrite example
+
+```json
+[
+  { "from": ["Aky"], "to": ["Aki"] },
+  { "from": ["Aki", "AKI"], "to": ["Akiha"] },
+  { "from": ["Akiha x S"], "to": ["Akiha", "S"] }
+]
+```
+
+Behavior:
+- Input `["Aky"]` -> `["Aki"]` (stops; does not continue to `Akiha`)
+- Input `["Aki"]` -> `["Akiha"]`
+- Input `["Akiha x S"]` -> `["Akiha", "S"]`
+
+Because rewriting is one-pass, a chain like `Aky -> Aki -> Akiha` should be flattened manually if desired.
+
+### Update mode (`structured.json` -> `structured-new.json` + `update-metadata.json`)
+
+1. Validate rewrite chains and emit warnings.
+2. Apply rewrite rules + default genre to metadata snapshot.
+3. Rebuild structure preserving:
+   - deduplicated rewriting rules
+   - default genre
+   - track edits from old `structured.json` (overlay)
+4. Write `structured-new.json`.
+5. Materialize desired metadata from `structured-new.json`.
+6. Diff desired vs original `metadata.json` and write changed tracks to `update-metadata.json`.
+
+Single-disc suppression:
+- If target has `Total discs == 1`, do not emit `Disc number` / `Total discs`-only updates.
+
+## `apply-tags`
+
+- Read `update-metadata.json`.
+- Apply updates in parallel.
+- Log processed album paths to `verbose.log`.
+- Update fields:
+  - `Title`
+  - `Artists` (join by `;`)
+  - `Date`
+  - `Year`
+  - `Album title`
+  - `Album artists` (join by `;`)
+  - `Track number`
+  - `Total tracks`
+  - `Disc number`
+  - `Total discs`
+  - `Genre`
+  - `Comment`
+
+## JSON formatting
+
+These outputs must be pretty JSON:
+- `metadata.json`
+- `structured.json`
+- `structured-new.json`
+- `update-metadata.json`
+- `audit.json`
+# TLMC Current Specification
+
+This file is the **current source-of-truth spec** for implementation behavior.
+
+## Binaries
+
+1. `split-album`
+   - Extract/split/tag workflow for album archives/folders.
+2. `scan-albums`
+   - Scan existing tags into `metadata.json`.
+3. `analyze-albums`
+   - Analysis mode: `metadata.json` -> `structured.json` (if `structured.json` missing).
+   - Update mode: edited `structured.json` -> `structured-new.json` + `update-metadata.json`.
+4. `apply-tags`
+   - Apply `update-metadata.json` back to audio tags.
+
+## Shared Logging and Audit
+
+- `verbose.log`: human-readable processing log; also echoed to stdout.
+- `error.log`: hard errors.
+- `audit.json`: structured audit output (pretty JSON), grouped by category arrays.
+- All logged paths are relative to execution directory.
+
+Current audit categories:
+- `missing_cue`
+- `missing_flac`
+- `multi_disc`
+- `corrupt_cuesheet`
+- `missing_info`
+- `invalid_names`
+- `ambiguous_pairing`
+- `corrupted_tracks`
+- `disc_classification`
+- `different_album_artist`
+- `rewrite_chain_warning`
+
+## Directory Expectations
+
+- Executable runs in a root directory containing circle folders.
+- Circle folder names may be bracketed (`[Circle]`) or plain (`Circle`).
+- Circle folders may contain:
+  - album `.rar` files (`YYYY.MM.DD [CAT] Album [Event].rar`)
+  - already-extracted album directories
+
+## `split-album` Behavior
+
+### Discovery and extraction
+
+- Process album directories even without associated `.rar`.
+- Extract `.rar` only when same-name folder does not already exist.
+- Skip album if any `.flac.old` or `.cue.old` exists in album tree.
+
+### Pairing FLAC and CUE
+
+Order:
+1. Single FLAC + single CUE -> pair.
+2. Exact stem match (case-insensitive).
+3. Non-ambiguous substring relation.
+
+If ambiguous substring relation exists, record to `audit.json.ambiguous_pairing` and do not auto-pair.
+
+### Cue handling
+
+- Decode cue with `chardetng`.
+- Parse cue with custom parser (REM GENRE/DATE/COMMENT, top-level TITLE/PERFORMER, TRACK TITLE/PERFORMER, INDEX 01).
+- Corrupt cue conditions:
+  - parse failure
+  - any track duration <= 0
+  - last track start offset > FLAC duration
+- Corrupt cues logged to `audit.json.corrupt_cuesheet`; pair skipped.
+
+### Metadata fallback
+
+- DATE fallback:
+  - archive filename date token first
+  - else album folder date token
+- ALBUMARTIST fallback:
+  - circle folder name
+- If fallback is required but corresponding directory naming is invalid, skip album and log to `error.log`.
+
+### Output
+
+- Track output name: `TRACK_ID - TRACK_NAME.flac`
+- For multi-pair albums, output subdir per FLAC stem.
+- Tag at encode time; parallel per-track encoding.
+- Rename processed source FLAC/CUE to `.old`.
+
+## `scan-albums` Behavior
+
+- Scan file types: `flac`, `mp3`, `m4a`.
+- Use `audiotags`.
+- Optional `scan-filter.txt` limits circles (one circle per line).
+- Without filter, scan all circle directories in root.
+- Album directories logged to `verbose.log`.
+- Corrupted/unreadable tracks logged to `audit.json.corrupted_tracks`.
+- Run scanning in parallel.
+
+### `metadata.json` format
+
+```json
+{
+  "TRACK_PATH": {
+    "Title": "...",
+    "Artists": ["..."],
+    "Date": "...",
+    "Year": "...",
+    "Album artists": ["..."],
+    "Album title": "...",
+    "Track number": 1,
+    "Total tracks": 10,
+    "Disc number": 1,
+    "Total discs": 1,
+    "Genre": "...",
+    "Comment": "..."
+  }
+}
+```
+
+All fields optional per track.
+
+For `Artists` and `Album artists`, `scan-albums` treats `;` as multi-value separator.
+
+## `analyze-albums` Behavior
+
+## Mode selection
+
+- If `structured.json` missing: analysis mode.
+- Else: update mode.
+
+### Analysis mode (`metadata.json` -> `structured.json`)
+
+#### Path grouping
+
+- Parse track path to determine `(circle, album_folder)`.
+- Album display key (`ALBUM_NAME`) is derived from folder name by stripping:
+  - leading date token
+  - leading bracket token (catalog)
+  - trailing bracket token (event)
+- For single-disc albums, if all tracks share one non-empty album-title tag and it differs from derived folder name, use tag name as `ALBUM_NAME`.
+- If display key collides, disambiguate with `(<album_folder_name>)`.
+
+#### Disc classification
+
+Rules:
+1. If all tracks have same album title and no disc number -> disc 1.
+2. Otherwise, explicit disc numbers are used first.
+3. Remaining tracks grouped by album title and assigned consecutive disc numbers after existing explicit numbers.
+
+If rule 3 used, log album path to `audit.json.disc_classification`.
+
+#### Aggregation
+
+- Aggregate:
+  - all album artists
+  - all artists
+  - all genres
+- Missing artists in track -> `audit.json.missing_info`.
+- Album artist inconsistency or mismatch vs circle name -> `audit.json.different_album_artist`.
+
+#### Preprocessing for artist/album-artist aggregation
+
+For singular value:
+1. Trim leading `Vo.`.
+2. Split by: `feat.`, `+`, ` x `, ` & `, `/`, `，`, `、`, `;`, `,`.
+3. Do not split inside `()` / `（）`.
+4. Trim tokens.
+
+If singular preprocessing changed value, generate rewrite rule:
+- `from`: original singular value
+- `to`: split/preprocessed values
+
+#### Normalization-driven rewrite generation
+
+- Normalize with:
+  - lowercase
+  - `'`/`“`/`”` -> `"`
+  - `＊` -> `*`
+- If multiple variants normalize equal, generate rewrite rule mapping variants to lexicographically smallest original variant.
+- Rules deduplicated before output.
+
+### Update mode (`structured.json` -> `structured-new.json` + `update-metadata.json`)
+
+1. Validate rewrite chains:
+   - if any rule `to` matches another rule `from` within same rule-set, log to `audit.json.rewrite_chain_warning` (deduplicated).
+2. Apply rewrite rules + default genre to metadata snapshot.
+3. Rebuild structure and preserve:
+   - deduplicated rewriting rules
+   - default genre
+   - track-level edits from original `structured.json` (overlay)
+4. Apply rewrites to `structured-new` artists/album-artists.
+5. Write `structured-new.json`.
+6. Materialize desired metadata from `structured-new`.
+7. Diff against original `metadata.json` to produce `update-metadata.json`.
+
+### Update diff filtering
+
+- Single-disc albums (`Total discs == 1`) never emit `Disc number` / `Total discs` updates.
+
+## `apply-tags` Behavior
+
+- Read `update-metadata.json`.
+- Apply in parallel.
+- Log processed album paths to `verbose.log`.
+- Supports updating:
+  - Title
+  - Artists (joined by `;`)
+  - Date / Year
+  - Album title
+  - Album artists (joined by `;`)
+  - Track number / total tracks
+  - Disc number / total discs
+  - Genre
+  - Comment
+
+## JSON Output Formatting
+
+These files must be pretty-printed JSON:
+- `metadata.json`
+- `structured.json`
+- `structured-new.json`
+- `update-metadata.json`
+- `audit.json`
 A simple one-click executable for extracting tracks from TLMC.
 Need to work on Windows for dummies, so this should be one-click with no command line arguments for now.
 
