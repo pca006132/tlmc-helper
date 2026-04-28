@@ -6,7 +6,7 @@ use serde_json::{Map, Value};
 pub struct Logger {
     exec_dir: PathBuf,
     verbose: File,
-    error: File,
+    error: Option<File>,
 }
 
 impl Logger {
@@ -14,7 +14,7 @@ impl Logger {
         Ok(Self {
             exec_dir: exec_dir.to_path_buf(),
             verbose: open_append(exec_dir.join("verbose.log"))?,
-            error: open_append(exec_dir.join("error.log"))?,
+            error: None,
         })
     }
 
@@ -29,7 +29,12 @@ impl Logger {
     }
 
     pub fn error(&mut self, msg: &str) -> Result<(), String> {
+        if self.error.is_none() {
+            self.error = Some(open_append(self.exec_dir.join("error.log")).map_err(ioe)?);
+        }
         self.error
+            .as_mut()
+            .ok_or_else(|| "failed to initialize error.log".to_string())?
             .write_all(format!("{msg}\n").as_bytes())
             .map_err(ioe)
     }

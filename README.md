@@ -42,7 +42,7 @@ English: [README_EN.md](README_EN.md)
 
 - `split-album`：解包、配对 FLAC/CUE、分轨并写初始标签
 - `scan-albums`：扫描已有音频标签 -> `metadata.json`
-- `analyze-albums`：生成/更新可编辑结构（`structured*.json`）
+- `analyze-albums`：生成/更新 `structured.json` 和 `rewriting.json`，并在更新阶段生成 `update-metadata.json`
 - `apply-tags`：把 `update-metadata.json` 回写到音频文件
 
 ## Windows 用户：点击哪个 exe？
@@ -52,19 +52,19 @@ English: [README_EN.md](README_EN.md)
 1. `split-album.exe`（可选，如果你要从整轨+CUE分轨）
 2. `scan-albums.exe`
 3. `analyze-albums.exe`（第一次）
-4. 编辑 `structured.json`
+4. 编辑 `structured.json` 和/或 `rewriting.json`
 5. `analyze-albums.exe`（第二次）
 6. `apply-tags.exe`
 
 `.exe` 可以直接双击，不需要 `.bat`。  
-日志和审计都写文件（`verbose.log` / `error.log` / `audit.json`），即使窗口关闭也不会丢记录。
+日志和审计都写文件（`verbose.log` / `audit.json`）。`error.log` 仅在出现错误时才会创建。
 
 ## 命令行方式（可选）
 
 ```bash
 cargo run --bin scan-albums
 cargo run --bin analyze-albums
-# 编辑 structured.json
+# 编辑 structured.json / rewriting.json
 cargo run --bin analyze-albums
 cargo run --bin apply-tags
 ```
@@ -72,22 +72,30 @@ cargo run --bin apply-tags
 ## 你会看到的文件
 
 - `metadata.json`：扫描得到的原始标签快照
-- `structured.json`：你要编辑的主文件
-- `structured-new.json`：按当前规则推导出的新结构（用来复查）
+- `structured.json`：专辑/分盘/曲目结构主文件
+- `rewriting.json`：重写规则、默认流派、名字统计（给人和 LLM 看）
 - `update-metadata.json`：实际待写回的差异补丁
 - `audit.json`：所有需要人工关注的问题
 - `verbose.log`：详细过程日志
-- `error.log`：硬错误
+- `error.log`：硬错误（仅在有错误时存在）
 
-## `structured.json` 编辑重点（非常重要）
+## `structured.json` 与 `rewriting.json` 怎么分工
+
+- `structured.json`：只放结构和曲目编辑内容（专辑/盘/曲目字段）。
+- `rewriting.json`：只放重写与聚合信息：
+  - `all artists` / `all album artists`（字典：名字 -> 计数）
+  - `artists rewriting` / `album artists rewriting` / `genre rewriting`
+  - `all genres` / `default genre`
+
+## 重写工作流（非常重要）
 
 1. 先看每个社團下的：
-   - `all album artists`
-   - `all artists`
+   - `rewriting.json` 里的 `all album artists`
+   - `rewriting.json` 里的 `all artists`
 2. 找出同一人/同一组合的不同写法、错别字、别名。
-3. 在 rewriting 里写规则统一这些名字。
+3. 在 `rewriting.json` 里写规则统一这些名字。
 4. 再跑一次 `analyze-albums`。
-5. 打开 `structured-new.json`，确认不想要的旧写法是否还存在。
+5. 再看 `rewriting.json` 的聚合结果，确认不想要的旧写法是否还存在。
 
 如果还在，继续补 rewriting 规则并重复上面步骤。
 
@@ -128,6 +136,7 @@ cargo run --bin apply-tags
 - `scan-albums` 读取多艺术家时把 `;` 当分隔符。
 - `apply-tags` 写回多艺术家时也用 `;` 拼接。
 - 盘号由 `structured.json` 的 `discs` 顺序自动推断（第 1 组是 Disc 1，以此类推）。
+- `analyze-albums` 在 update 模式下会保留 `rewriting.json` 里的规则和 `default genre`，并刷新名字统计与 `all genres`。
 
 ## 审计建议
 
@@ -135,7 +144,7 @@ cargo run --bin apply-tags
 
 - `audit.json`
 - `error.log`
-- `structured-new.json`（在改名规则后）
+- `rewriting.json`（在改名规则后）
 
 ## `audit.json` 字段说明（逐项）
 

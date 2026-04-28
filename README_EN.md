@@ -45,7 +45,7 @@ Key points:
 
 - `split-album`: extract, pair FLAC/CUE, split, initial tagging
 - `scan-albums`: scan existing tags -> `metadata.json`
-- `analyze-albums`: generate/update structured metadata files
+- `analyze-albums`: generate/update `structured.json` and `rewriting.json`, and generate `update-metadata.json` in update mode
 - `apply-tags`: write `update-metadata.json` back to tracks
 
 ## Windows users: which `.exe` to click?
@@ -55,18 +55,18 @@ In build output (usually `target/release`):
 1. `split-album.exe` (optional; only if you need splitting)
 2. `scan-albums.exe`
 3. `analyze-albums.exe` (first run)
-4. edit `structured.json`
+4. edit `structured.json` and/or `rewriting.json`
 5. `analyze-albums.exe` (second run)
 6. `apply-tags.exe`
 
-`.exe` files are directly clickable. `.bat` wrappers are not required here because all output is persisted to log/json files (`verbose.log`, `error.log`, `audit.json`).
+`.exe` files are directly clickable. `.bat` wrappers are not required. Outputs are persisted to files (`verbose.log`, `audit.json`), and `error.log` is created only when errors occur.
 
 ## CLI commands (optional)
 
 ```bash
 cargo run --bin scan-albums
 cargo run --bin analyze-albums
-# edit structured.json
+# edit structured.json / rewriting.json
 cargo run --bin analyze-albums
 cargo run --bin apply-tags
 ```
@@ -74,22 +74,30 @@ cargo run --bin apply-tags
 ## Main files you will use
 
 - `metadata.json`: raw scanned snapshot
-- `structured.json`: main editable file
-- `structured-new.json`: rebuilt result for verification
+- `structured.json`: album/disc/track structure edits
+- `rewriting.json`: rewriting rules, default genre, and name counts
 - `update-metadata.json`: patch that `apply-tags` consumes
 - `audit.json`: all review-needed findings
 - `verbose.log`: processing details
-- `error.log`: hard errors
+- `error.log`: hard errors (exists only if errors occur)
 
-## Editing strategy for `structured.json` (core workflow)
+## `structured.json` vs `rewriting.json`
+
+- `structured.json`: structure and track-level editable fields only.
+- `rewriting.json`: rewriting and aggregation fields:
+  - `all artists` / `all album artists` as `{name: count}`
+  - rewriting rules
+  - `all genres` / `default genre`
+
+## Core rewriting workflow
 
 For each circle:
 
-1. Inspect `all album artists` and `all artists`.
+1. Inspect `all album artists` and `all artists` in `rewriting.json`.
 2. Identify variants of the same person/group name (typos, aliases, formatting).
-3. Add rewriting rules to unify them.
+3. Add rewriting rules in `rewriting.json`.
 4. Run `analyze-albums` again.
-5. Check `structured-new.json` and confirm unwanted variants are gone.
+5. Re-check refreshed counts/lists in `rewriting.json` and confirm unwanted variants are gone.
 
 Repeat until the aggregated lists look clean.
 
@@ -130,12 +138,13 @@ Potential chain issues are reported as `rewrite_chain_warning` in `audit.json`.
 - `scan-albums` treats `;` as a multi-artist separator.
 - `apply-tags` joins multi-artist values with `;`.
 - Disc numbering is inferred from `structured.json` disc order (first disc map = Disc 1, etc.).
+- In update mode, `analyze-albums` preserves rules/default genre from existing `rewriting.json`, then refreshes `all artists`, `all album artists`, and `all genres`.
 
 ## Recommended checks after each run
 
 - `audit.json`
 - `error.log`
-- `structured-new.json` (especially after rewriting edits)
+- `rewriting.json` (especially after rewriting edits)
 
 ## `audit.json` field reference
 
