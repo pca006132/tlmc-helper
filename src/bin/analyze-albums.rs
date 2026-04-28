@@ -107,6 +107,7 @@ fn generate_update_mode(exec_dir: &Path, logger: &mut Logger) -> Result<(), Stri
         }
     }
     overlay_track_data_from_old(&mut structured_new, &structured_data);
+    apply_rewrites_to_structured_new(&mut structured_new);
     let structured_json = serde_json::to_string_pretty(&structured_new).map_err(|e| e.to_string())?;
     fs::write(exec_dir.join("structured-new.json"), structured_json).map_err(|e| e.to_string())?;
 
@@ -203,11 +204,27 @@ fn build_structured_from_metadata(
         let mut split_rules_album_artists = Vec::new();
         let mut split_rules_artists = Vec::new();
 
-        for (album_name, album_data) in circle_data.albums {
-            let album_path = format!("{circle_name}/{album_name}");
+        for (album_folder_name, album_data) in circle_data.albums {
+            let album_path = format!("{circle_name}/{album_folder_name}");
+            let mut album_name = derive_album_name_for_output(&album_folder_name);
             let (discs, used_rule3) = classify_discs(&album_data.tracks);
             if used_rule3 {
                 disc_classification.insert(album_path.clone());
+            }
+            if discs.len() == 1 {
+                let tagged_album_titles = album_data
+                    .tracks
+                    .iter()
+                    .filter_map(|t| t.album_title.clone())
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+                    .collect::<BTreeSet<_>>();
+                if tagged_album_titles.len() == 1 {
+                    let tagged = tagged_album_titles.iter().next().cloned().unwrap_or_default();
+                    if !tagged.is_empty() && tagged != album_name {
+                        album_name = tagged;
+                    }
+                }
             }
 
             let mut album_artist_sets = HashSet::new();
@@ -260,7 +277,11 @@ fn build_structured_from_metadata(
             {
                 diff_album_artist.insert(album_path.clone());
             }
-            out_circle.albums.insert(album_name, album_out);
+            let mut final_album_name = album_name.clone();
+            if out_circle.albums.contains_key(&final_album_name) {
+                final_album_name = format!("{album_name} ({album_folder_name})");
+            }
+            out_circle.albums.insert(final_album_name, album_out);
         }
 
         out_circle.all_album_artists = dedup_sorted(all_album_artists_raw.clone());
@@ -549,6 +570,17 @@ fn diff_track_metadata(orig: &Map<String, Value>, desired: &Map<String, Value>) 
             patch.insert(k.clone(), desired_v.clone());
         }
     }
+    // For single-disc targets, never emit disc-number updates.
+    if !patch.is_empty() {
+        let total_discs_is_one = desired
+            .get("Total discs")
+            .and_then(|v| v.as_u64())
+            == Some(1);
+        if total_discs_is_one {
+            patch.remove("Disc number");
+            patch.remove("Total discs");
+        }
+    }
     patch
 }
 
@@ -572,6 +604,22 @@ fn overlay_track_data_from_old(
                             break;
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+fn apply_rewrites_to_structured_new(structured: &mut BTreeMap<String, CircleStructured>) {
+    for (_circle_name, circle) in structured {
+        for (_album_name, album) in &mut circle.albums {
+            album.album_artists = rewrite_names(
+                album.album_artists.clone(),
+                &circle.album_artists_rewriting,
+            );
+            for disc in &mut album.discs {
+                for (_track_path, track) in disc {
+                    track.artists = rewrite_names(track.artists.clone(), &circle.artists_rewriting);
                 }
             }
         }
@@ -632,14 +680,75 @@ fn read_metadata(path: impl AsRef<Path>) -> Result<BTreeMap<String, Map<String, 
 }
 
 fn parse_track_path(track: &str) -> Result<(String, String), String> {
-    let mut parts = track.split('/');
-    let Some(circle) = parts.next() else {
+    let parts = track.split('/').collect::<Vec<_>>();
+    if parts.len() < 3 {
         return Err("invalid track path".to_string());
-    };
-    let Some(album) = parts.next() else {
-        return Err("invalid track path".to_string());
-    };
-    Ok((circle.to_string(), album.to_string()))
+    }
+
+    // Prefer full album folder name detected by album naming pattern.
+    for i in 1..parts.len() {
+        if is_album_dir_name(parts[i]) {
+            return Ok((parts[i - 1].to_string(), parts[i].to_string()));
+        }
+    }
+
+    // Fallback: original behavior
+    Ok((parts[0].to_string(), parts[1].to_string()))
+}
+
+fn is_album_dir_name(name: &str) -> bool {
+    let token = name.split_whitespace().next().unwrap_or_default();
+    let mut p = token.split('.');
+    let y = p.next().unwrap_or_default();
+    let m = p.next().unwrap_or_default();
+    let d = p.next().unwrap_or_default();
+    y.len() == 4
+        && m.len() == 2
+        && d.len() == 2
+        && y.chars().all(|c| c.is_ascii_digit())
+        && m.chars().all(|c| c.is_ascii_digit())
+        && d.chars().all(|c| c.is_ascii_digit())
+}
+
+fn derive_album_name_for_output(folder: &str) -> String {
+    let parts = folder.split_whitespace().collect::<Vec<_>>();
+    if parts.is_empty() {
+        return folder.to_string();
+    }
+    let mut i = 0usize;
+    if is_date_token(parts[0]) {
+        i += 1;
+    }
+    if i < parts.len() && is_bracket_token(parts[i]) {
+        i += 1;
+    }
+    let mut j = parts.len();
+    if j > i && is_bracket_token(parts[j - 1]) {
+        j -= 1;
+    }
+    let candidate = parts[i..j].join(" ").trim().to_string();
+    if candidate.is_empty() {
+        folder.to_string()
+    } else {
+        candidate
+    }
+}
+
+fn is_date_token(token: &str) -> bool {
+    let mut p = token.split('.');
+    let y = p.next().unwrap_or_default();
+    let m = p.next().unwrap_or_default();
+    let d = p.next().unwrap_or_default();
+    y.len() == 4
+        && m.len() == 2
+        && d.len() == 2
+        && y.chars().all(|c| c.is_ascii_digit())
+        && m.chars().all(|c| c.is_ascii_digit())
+        && d.chars().all(|c| c.is_ascii_digit())
+}
+
+fn is_bracket_token(token: &str) -> bool {
+    token.len() >= 2 && token.starts_with('[') && token.ends_with(']')
 }
 
 fn get_s(m: &Map<String, Value>, key: &str) -> Option<String> {

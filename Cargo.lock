@@ -594,6 +594,7 @@ dependencies = [
  "chardetng",
  "encoding_rs",
  "flac-codec",
+ "id3",
  "rayon",
  "serde",
  "serde_json",

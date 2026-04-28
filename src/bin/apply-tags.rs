@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
 
 use audiotags::Tag;
+use id3::Timestamp;
 use rayon::prelude::*;
 use serde_json::{Map, Value};
 use tlmc::logger::Logger;
@@ -55,18 +57,47 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
 
 fn apply_patch(path: &Path, patch: &Map<String, Value>) -> Result<(), String> {
     let mut tag = Tag::new().read_from_path(path).map_err(|e| e.to_string())?;
+    if let Some(v) = get_s(patch, "Title") {
+        tag.set_title(&v);
+    }
     if let Some(v) = get_list(patch, "Artists")
         && let Some(first) = v.first()
     {
         tag.set_artist(first);
     }
+    if let Some(v) = get_s(patch, "Album title") {
+        tag.set_album_title(&v);
+    }
     if let Some(v) = get_list(patch, "Album artists")
-        && let Some(first) = v.first()
+        && !v.is_empty()
     {
-        tag.set_album_artist(first);
+        tag.set_album_artist(&v.join(";"));
+    }
+    if let Some(v) = get_u16(patch, "Track number") {
+        tag.set_track_number(v);
+    }
+    if let Some(v) = get_u16(patch, "Total tracks") {
+        tag.set_total_tracks(v);
+    }
+    if let Some(v) = get_u16(patch, "Disc number") {
+        tag.set_disc_number(v);
+    }
+    if let Some(v) = get_u16(patch, "Total discs") {
+        tag.set_total_discs(v);
+    }
+    if let Some(v) = get_s(patch, "Date").or_else(|| get_s(patch, "Year")) {
+        if let Some(ts) = parse_timestamp_like(&v) {
+            tag.set_date(ts);
+        }
+    }
+    if let Some(v) = get_i32(patch, "Year") {
+        tag.set_year(v);
     }
     if let Some(v) = get_s(patch, "Genre") {
         tag.set_genre(&v);
+    }
+    if let Some(v) = get_s(patch, "Comment") {
+        tag.set_comment(v);
     }
     tag.write_to_path(path.to_string_lossy().as_ref())
         .map_err(|e| e.to_string())
@@ -87,4 +118,21 @@ fn get_list(m: &Map<String, Value>, key: &str) -> Option<Vec<String>> {
         Some(Value::String(v)) => Some(vec![v.to_string()]),
         _ => None,
     }
+}
+
+fn get_u16(m: &Map<String, Value>, key: &str) -> Option<u16> {
+    m.get(key)
+        .and_then(|v| v.as_u64())
+        .and_then(|v| u16::try_from(v).ok())
+}
+
+fn get_i32(m: &Map<String, Value>, key: &str) -> Option<i32> {
+    m.get(key)
+        .and_then(|v| v.as_i64())
+        .and_then(|v| i32::try_from(v).ok())
+}
+
+fn parse_timestamp_like(v: &str) -> Option<Timestamp> {
+    let normalized = v.replace('.', "-");
+    Timestamp::from_str(&normalized).ok()
 }
