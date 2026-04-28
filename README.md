@@ -46,7 +46,7 @@ English version: [README_EN.md](README_EN.md)
 3. 编辑 `structured.json`（人工调整重写规则、默认流派等）。
 4. 生成待更新清单：
    - 再次运行 `analyze-albums`
-   - 当 `structured.json` 已存在时，生成 `update-metadata.json`
+   - 当 `structured.json` 已存在时，生成 `update-metadata.json` 和 `structured-new.json`
 5. 应用标签：
    - `apply-tags`
    - 按 `update-metadata.json` 并行回写标签
@@ -63,7 +63,7 @@ cargo run --bin apply-tags
 ## `structured.json` 说明（需要人工编辑）
 
 `structured.json` 是“分析结果 + 重写规则配置”的中间文件。  
-第一次运行 `analyze-albums` 会生成它；你修改后再次运行 `analyze-albums` 才会生成 `update-metadata.json`。
+第一次运行 `analyze-albums` 会生成它；你修改后再次运行 `analyze-albums` 会生成 `update-metadata.json`，并输出更新后的结构快照 `structured-new.json`。
 
 核心结构（按圈组织）：
 
@@ -72,6 +72,10 @@ cargo run --bin apply-tags
 - `album artists rewriting` / `artists rewriting` / `genre rewriting`
   - 重写规则列表，格式为：
   - `{ "from": ["A", "B"], "to": ["C"] }`
+  - 对单值艺术家字段，程序会先做预处理拆分（用于自动生成一些重写规则）：
+    - 先去掉开头 `Vo.`
+    - 再按 `feat.`、`+`、` x `、` & `、`/`、`，`、`、`、`;`、`,` 拆分
+    - 括号内不拆分（`()` / `（）`）
 - `default genre`
   - 可选。用于补全没有 genre 的曲目
 - `albums`
@@ -103,7 +107,7 @@ cargo run --bin apply-tags
 1. 先检查并修正 `* rewriting` 规则（这是最关键的）。
 2. 需要补流派时填写 `default genre`。
 3. 如分盘结果可疑，检查 `albums -> ... -> discs` 的分组。
-4. 改完后再运行一次 `analyze-albums` 生成 `update-metadata.json`。
+4. 改完后再运行一次 `analyze-albums` 生成 `update-metadata.json` 与 `structured-new.json`。
 
 程序特性：
 

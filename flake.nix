@@ -33,6 +33,7 @@
             rust-analyzer-nightly
             clang
             pkg-config
+            jq
           ];
         };
       }

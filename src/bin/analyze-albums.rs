@@ -17,7 +17,7 @@ fn main() {
     };
     let structured = exec_dir.join("structured.json");
     let result = if structured.exists() {
-        generate_update_mode(&exec_dir)
+        generate_update_mode(&exec_dir, &mut logger)
     } else {
         analysis_mode(&exec_dir, &mut logger)
     };
@@ -28,6 +28,150 @@ fn main() {
 
 fn analysis_mode(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     let metadata = read_metadata(exec_dir.join("metadata.json"))?;
+    let (structured, audits) = build_structured_from_metadata(metadata)?;
+
+    for p in audits.disc_classification {
+        logger.append_audit("disc_classification", &p)?;
+    }
+    for p in audits.different_album_artist {
+        logger.append_audit("different_album_artist", &p)?;
+    }
+    for p in audits.missing_info {
+        logger.append_audit("missing_info", &p)?;
+    }
+
+    let json = serde_json::to_string_pretty(&structured).map_err(|e| e.to_string())?;
+    fs::write(exec_dir.join("structured.json"), json).map_err(|e| e.to_string())
+}
+
+fn generate_update_mode(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
+    let metadata = read_metadata(exec_dir.join("metadata.json"))?;
+    let structured_data: BTreeMap<String, CircleStructured> =
+        serde_json::from_str(&fs::read_to_string(exec_dir.join("structured.json")).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+    validate_rewrite_chains(&structured_data, logger)?;
+    let mut updated_metadata = metadata.clone();
+
+    for (track_path, orig) in &metadata {
+        let (circle, _) = parse_track_path(&track_path)?;
+        let Some(circle_cfg) = structured_data.get(&circle) else {
+            continue;
+        };
+        let artists = rewrite_names(
+            get_list(orig, "Artists"),
+            &circle_cfg.artists_rewriting,
+        );
+        let album_artists = rewrite_names(
+            get_list(orig, "Album artists"),
+            &circle_cfg.album_artists_rewriting,
+        );
+        let genre = rewrite_genre(
+            get_s(orig, "Genre"),
+            &circle_cfg.genre_rewriting,
+            circle_cfg.default_genre.clone(),
+        );
+        let mut patch = Map::new();
+        if artists != get_list(orig, "Artists") {
+            patch.insert(
+                "Artists".to_string(),
+                Value::Array(artists.into_iter().map(Value::String).collect()),
+            );
+        }
+        if album_artists != get_list(orig, "Album artists") {
+            patch.insert(
+                "Album artists".to_string(),
+                Value::Array(album_artists.into_iter().map(Value::String).collect()),
+            );
+        }
+        if genre != get_s(orig, "Genre") {
+            if let Some(g) = genre {
+                patch.insert("Genre".to_string(), Value::String(g));
+            }
+        }
+        if !patch.is_empty() {
+            if let Some(entry) = updated_metadata.get_mut(track_path) {
+                for (k, v) in &patch {
+                    entry.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+    let (mut structured_new, _) = build_structured_from_metadata(updated_metadata)?;
+    for (circle, new_circle) in &mut structured_new {
+        if let Some(old_circle) = structured_data.get(circle) {
+            new_circle.album_artists_rewriting =
+                dedup_rewrite_rules(old_circle.album_artists_rewriting.clone());
+            new_circle.artists_rewriting = dedup_rewrite_rules(old_circle.artists_rewriting.clone());
+            new_circle.genre_rewriting = dedup_rewrite_rules(old_circle.genre_rewriting.clone());
+            new_circle.default_genre = old_circle.default_genre.clone();
+        }
+    }
+    overlay_track_data_from_old(&mut structured_new, &structured_data);
+    let structured_json = serde_json::to_string_pretty(&structured_new).map_err(|e| e.to_string())?;
+    fs::write(exec_dir.join("structured-new.json"), structured_json).map_err(|e| e.to_string())?;
+
+    // Final update output should compare desired metadata from structured-new
+    // against original metadata.json, so manual track edits in structured data are included.
+    let desired = materialize_metadata_from_structured(&structured_new);
+    let mut updates = Map::new();
+    for (track_path, desired_fields) in desired {
+        let Some(orig_fields) = metadata.get(&track_path) else {
+            continue;
+        };
+        let patch = diff_track_metadata(orig_fields, &desired_fields);
+        if !patch.is_empty() {
+            updates.insert(track_path, Value::Object(patch));
+        }
+    }
+    let update_json =
+        serde_json::to_string_pretty(&Value::Object(updates)).map_err(|e| e.to_string())?;
+    fs::write(exec_dir.join("update-metadata.json"), update_json).map_err(|e| e.to_string())
+}
+
+fn validate_rewrite_chains(
+    structured: &BTreeMap<String, CircleStructured>,
+    logger: &mut Logger,
+) -> Result<(), String> {
+    for (circle, data) in structured {
+        check_rule_chain(circle, "artists_rewriting", &data.artists_rewriting, logger)?;
+        check_rule_chain(
+            circle,
+            "album_artists_rewriting",
+            &data.album_artists_rewriting,
+            logger,
+        )?;
+        check_rule_chain(circle, "genre_rewriting", &data.genre_rewriting, logger)?;
+    }
+    Ok(())
+}
+
+fn check_rule_chain(
+    circle: &str,
+    rule_set: &str,
+    rules: &[RewriteRule],
+    logger: &mut Logger,
+) -> Result<(), String> {
+    for (i, r1) in rules.iter().enumerate() {
+        for (j, r2) in rules.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            if r1.to.iter().any(|v| r2.from.iter().any(|f| f == v)) {
+                let left = serde_json::to_string(r1).map_err(|e| e.to_string())?;
+                let right = serde_json::to_string(r2).map_err(|e| e.to_string())?;
+                logger.append_audit(
+                    "rewrite_chain_warning",
+                    &format!("circle={circle} set={rule_set} rule_a={left} rule_b={right}"),
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_structured_from_metadata(
+    metadata: BTreeMap<String, Map<String, Value>>,
+) -> Result<(BTreeMap<String, CircleStructured>, AnalysisAudits), String> {
     let mut circles: BTreeMap<String, CircleData> = BTreeMap::new();
     let mut disc_classification = BTreeSet::new();
     let mut diff_album_artist = BTreeSet::new();
@@ -56,6 +200,8 @@ fn analysis_mode(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
         let mut all_album_artists_raw = Vec::new();
         let mut all_artists_raw = Vec::new();
         let mut all_genres = BTreeSet::new();
+        let mut split_rules_album_artists = Vec::new();
+        let mut split_rules_artists = Vec::new();
 
         for (album_name, album_data) in circle_data.albums {
             let album_path = format!("{circle_name}/{album_name}");
@@ -73,8 +219,16 @@ fn analysis_mode(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
                     if t.artists.is_empty() {
                         missing_info.insert(album_path.clone());
                     }
-                    let aa = aggregate_names_for_track(&t.album_artists);
-                    let a = aggregate_names_for_track(&t.artists);
+                    let aa_pre = aggregate_names_for_track(&t.album_artists);
+                    let a_pre = aggregate_names_for_track(&t.artists);
+                    for rule in aa_pre.split_rules.clone() {
+                        split_rules_album_artists.push(rule);
+                    }
+                    for rule in a_pre.split_rules.clone() {
+                        split_rules_artists.push(rule);
+                    }
+                    let aa = aa_pre.names;
+                    let a = a_pre.names;
                     for x in &aa {
                         all_album_artists_raw.push(x.clone());
                         album_album_artists.insert(x.clone());
@@ -112,74 +266,26 @@ fn analysis_mode(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
         out_circle.all_album_artists = dedup_sorted(all_album_artists_raw.clone());
         out_circle.all_artists = dedup_sorted(all_artists_raw.clone());
         out_circle.all_genres = all_genres.into_iter().collect();
-        out_circle.album_artists_rewriting = build_normalize_rules(&all_album_artists_raw);
-        out_circle.artists_rewriting = build_normalize_rules(&all_artists_raw);
+        out_circle.album_artists_rewriting = dedup_rewrite_rules(merge_rules(
+            split_rules_album_artists,
+            build_normalize_rules(&all_album_artists_raw),
+        ));
+        out_circle.artists_rewriting = dedup_rewrite_rules(merge_rules(
+            split_rules_artists,
+            build_normalize_rules(&all_artists_raw),
+        ));
+        out_circle.genre_rewriting = dedup_rewrite_rules(out_circle.genre_rewriting);
         structured.insert(circle_name, out_circle);
     }
 
-    for p in disc_classification {
-        logger.append_audit("disc_classification", &p)?;
-    }
-    for p in diff_album_artist {
-        logger.append_audit("different_album_artist", &p)?;
-    }
-    for p in missing_info {
-        logger.append_audit("missing_info", &p)?;
-    }
-
-    let json = serde_json::to_string_pretty(&structured).map_err(|e| e.to_string())?;
-    fs::write(exec_dir.join("structured.json"), json).map_err(|e| e.to_string())
-}
-
-fn generate_update_mode(exec_dir: &Path) -> Result<(), String> {
-    let metadata = read_metadata(exec_dir.join("metadata.json"))?;
-    let structured_data: BTreeMap<String, CircleStructured> =
-        serde_json::from_str(&fs::read_to_string(exec_dir.join("structured.json")).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    let mut updates = Map::new();
-
-    for (track_path, orig) in metadata {
-        let (circle, _) = parse_track_path(&track_path)?;
-        let Some(circle_cfg) = structured_data.get(&circle) else {
-            continue;
-        };
-        let artists = rewrite_names(
-            get_list(&orig, "Artists"),
-            &circle_cfg.artists_rewriting,
-        );
-        let album_artists = rewrite_names(
-            get_list(&orig, "Album artists"),
-            &circle_cfg.album_artists_rewriting,
-        );
-        let genre = rewrite_genre(
-            get_s(&orig, "Genre"),
-            &circle_cfg.genre_rewriting,
-            circle_cfg.default_genre.clone(),
-        );
-        let mut patch = Map::new();
-        if artists != get_list(&orig, "Artists") {
-            patch.insert(
-                "Artists".to_string(),
-                Value::Array(artists.into_iter().map(Value::String).collect()),
-            );
-        }
-        if album_artists != get_list(&orig, "Album artists") {
-            patch.insert(
-                "Album artists".to_string(),
-                Value::Array(album_artists.into_iter().map(Value::String).collect()),
-            );
-        }
-        if genre != get_s(&orig, "Genre") {
-            if let Some(g) = genre {
-                patch.insert("Genre".to_string(), Value::String(g));
-            }
-        }
-        if !patch.is_empty() {
-            updates.insert(track_path, Value::Object(patch));
-        }
-    }
-    let json = serde_json::to_string_pretty(&Value::Object(updates)).map_err(|e| e.to_string())?;
-    fs::write(exec_dir.join("update-metadata.json"), json).map_err(|e| e.to_string())
+    Ok((
+        structured,
+        AnalysisAudits {
+            disc_classification,
+            different_album_artist: diff_album_artist,
+            missing_info,
+        },
+    ))
 }
 
 fn classify_discs(tracks: &[TrackLite]) -> (Vec<Vec<TrackLite>>, bool) {
@@ -283,20 +389,209 @@ fn build_normalize_rules(values: &[String]) -> Vec<RewriteRule> {
     out
 }
 
-fn aggregate_names_for_track(values: &[String]) -> Vec<String> {
+fn aggregate_names_for_track(values: &[String]) -> NameAggregation {
     if values.len() == 1 {
-        return split_candidates(&values[0]);
+        let raw_original = values[0].trim().to_string();
+        let raw_trimmed = trim_leading_vo(&raw_original).to_string();
+        let split = split_candidates(&raw_trimmed);
+        let mut split_rules = Vec::new();
+        if (raw_original != raw_trimmed || split.len() > 1) && !raw_original.is_empty() {
+            split_rules.push(RewriteRule {
+                from: vec![raw_original.clone()],
+                to: split.clone(),
+            });
+        }
+        return NameAggregation {
+            names: split,
+            split_rules,
+        };
     }
-    values.iter().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).collect()
+    NameAggregation {
+        names: values
+            .iter()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .collect(),
+        split_rules: Vec::new(),
+    }
 }
 
 fn split_candidates(value: &str) -> Vec<String> {
-    value
-        .split(['，', '、', ';', ','])
-        .map(str::trim)
+    let mut chunks = vec![value.to_string()];
+    for sep in ["feat.", " + ", " x ", " & ", "/", "，", "、", ";", ","] {
+        let mut next = Vec::new();
+        for c in chunks {
+            next.extend(split_outside_parens(&c, sep));
+        }
+        chunks = next;
+    }
+    chunks
+        .into_iter()
+        .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
-        .map(ToString::to_string)
         .collect()
+}
+
+fn split_outside_parens(input: &str, sep: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0_i32;
+    let mut buf = String::new();
+    let mut i = 0;
+    while i < input.len() {
+        let ch = input[i..].chars().next().unwrap_or('\0');
+        let ch_len = ch.len_utf8();
+        if ch == '(' || ch == '（' {
+            depth += 1;
+            buf.push(ch);
+            i += ch_len;
+            continue;
+        }
+        if ch == ')' || ch == '）' {
+            depth = (depth - 1).max(0);
+            buf.push(ch);
+            i += ch_len;
+            continue;
+        }
+        if depth == 0 && input[i..].starts_with(sep) {
+            out.push(buf.trim().to_string());
+            buf.clear();
+            i += sep.len();
+            continue;
+        }
+        buf.push(ch);
+        i += ch_len;
+    }
+    out.push(buf.trim().to_string());
+    out
+}
+
+fn trim_leading_vo(input: &str) -> &str {
+    let s = input.trim();
+    if s
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("vo."))
+    {
+        s.get(3..).unwrap_or("").trim_start()
+    } else {
+        s
+    }
+}
+
+fn merge_rules(primary: Vec<RewriteRule>, secondary: Vec<RewriteRule>) -> Vec<RewriteRule> {
+    let mut out = Vec::new();
+    for r in primary.into_iter().chain(secondary.into_iter()) {
+        if out
+            .iter()
+            .any(|x: &RewriteRule| x.from == r.from && x.to == r.to)
+        {
+            continue;
+        }
+        out.push(r);
+    }
+    out
+}
+
+fn materialize_metadata_from_structured(
+    structured: &BTreeMap<String, CircleStructured>,
+) -> BTreeMap<String, Map<String, Value>> {
+    let mut out = BTreeMap::new();
+    for (_circle, circle_data) in structured {
+        for (album_title, album_data) in &circle_data.albums {
+            let total_discs = album_data.discs.len() as u64;
+            for (disc_idx, disc) in album_data.discs.iter().enumerate() {
+                let disc_no = (disc_idx as u64) + 1;
+                for (track_path, track) in disc {
+                    let mut m = Map::new();
+                    m.insert("Title".to_string(), Value::String(track.title.clone()));
+                    m.insert("Date".to_string(), Value::String(track.date.clone()));
+                    m.insert(
+                        "Track number".to_string(),
+                        Value::Number(track.track_number.into()),
+                    );
+                    m.insert(
+                        "Artists".to_string(),
+                        Value::Array(track.artists.iter().cloned().map(Value::String).collect()),
+                    );
+                    m.insert("Genre".to_string(), Value::String(track.genre.clone()));
+                    m.insert("Album title".to_string(), Value::String(album_title.clone()));
+                    m.insert(
+                        "Album artists".to_string(),
+                        Value::Array(
+                            album_data
+                                .album_artists
+                                .iter()
+                                .cloned()
+                                .map(Value::String)
+                                .collect(),
+                        ),
+                    );
+                    m.insert("Disc number".to_string(), Value::Number(disc_no.into()));
+                    m.insert("Total discs".to_string(), Value::Number(total_discs.into()));
+                    out.insert(track_path.clone(), m);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn diff_track_metadata(orig: &Map<String, Value>, desired: &Map<String, Value>) -> Map<String, Value> {
+    let mut patch = Map::new();
+    for (k, desired_v) in desired {
+        let changed = match (orig.get(k), desired_v) {
+            (Some(Value::String(a)), Value::String(b)) => a != b,
+            (Some(Value::Number(a)), Value::Number(b)) => a != b,
+            (Some(Value::Array(a)), Value::Array(b)) => a != b,
+            (Some(_), _) => true,
+            (None, _) => true,
+        };
+        if changed {
+            patch.insert(k.clone(), desired_v.clone());
+        }
+    }
+    patch
+}
+
+fn overlay_track_data_from_old(
+    structured_new: &mut BTreeMap<String, CircleStructured>,
+    structured_old: &BTreeMap<String, CircleStructured>,
+) {
+    for (circle_name, old_circle) in structured_old {
+        let Some(new_circle) = structured_new.get_mut(circle_name) else {
+            continue;
+        };
+        for (album_name, old_album) in &old_circle.albums {
+            let Some(new_album) = new_circle.albums.get_mut(album_name) else {
+                continue;
+            };
+            for old_disc in &old_album.discs {
+                for (track_path, old_track) in old_disc {
+                    for new_disc in &mut new_album.discs {
+                        if let Some(new_track) = new_disc.get_mut(track_path) {
+                            *new_track = old_track.clone();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn dedup_rewrite_rules(rules: Vec<RewriteRule>) -> Vec<RewriteRule> {
+    let mut out = Vec::new();
+    for mut r in rules {
+        r.from = dedup_preserve(r.from);
+        r.to = dedup_preserve(r.to);
+        if out
+            .iter()
+            .any(|x: &RewriteRule| x.from == r.from && x.to == r.to)
+        {
+            continue;
+        }
+        out.push(r);
+    }
+    out
 }
 
 fn normalize_name(v: &str) -> String {
@@ -416,7 +711,7 @@ struct AlbumStructured {
     discs: Vec<BTreeMap<String, TrackStructured>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct TrackStructured {
     title: String,
     date: String,
@@ -430,4 +725,15 @@ struct TrackStructured {
 struct RewriteRule {
     from: Vec<String>,
     to: Vec<String>,
+}
+
+struct NameAggregation {
+    names: Vec<String>,
+    split_rules: Vec<RewriteRule>,
+}
+
+struct AnalysisAudits {
+    disc_classification: BTreeSet<String>,
+    different_album_artist: BTreeSet<String>,
+    missing_info: BTreeSet<String>,
 }

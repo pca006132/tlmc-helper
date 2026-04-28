@@ -48,7 +48,7 @@ Circle folder names can be bracketed (`[CircleName]`) or plain (`CircleName`).
 3. Edit `structured.json` (rewrite rules, default genre, etc.).
 4. Generate update plan:
    - run `analyze-albums` again
-   - if `structured.json` exists, it generates `update-metadata.json`
+   - if `structured.json` exists, it generates `update-metadata.json` and `structured-new.json`
 5. Apply updates:
    - `apply-tags`
    - applies `update-metadata.json` in parallel
@@ -73,7 +73,7 @@ Flow:
 
 1. First `analyze-albums` run creates `structured.json`.
 2. You edit it.
-3. Second `analyze-albums` run reads it and creates `update-metadata.json`.
+3. Second `analyze-albums` run reads it and creates `update-metadata.json`, plus `structured-new.json` (post-update structure snapshot).
 
 Main fields (per circle):
 
@@ -82,6 +82,10 @@ Main fields (per circle):
 - `album artists rewriting` / `artists rewriting` / `genre rewriting`
   - rewrite rules in form:
   - `{ "from": ["A", "B"], "to": ["C"] }`
+  - for singular artist/album-artist tags, preprocessing split is used to generate extra rules:
+    - trim leading `Vo.`
+    - split by `feat.`, `+`, ` x `, ` & `, `/`, `，`, `、`, `;`, `,`
+    - do not split inside parentheses (`()` / `（）`)
 - `default genre`
   - optional fallback genre for tracks missing genre
 - `albums`
@@ -113,7 +117,7 @@ Editing tips:
 1. Start with rewrite rules (`* rewriting`) first.
 2. Set `default genre` only if you want missing genres auto-filled.
 3. Review `albums -> ... -> discs` if disc grouping looks suspicious.
-4. Re-run `analyze-albums` after edits to produce `update-metadata.json`.
+4. Re-run `analyze-albums` after edits to produce `update-metadata.json` and `structured-new.json`.
 
 Behavior:
 

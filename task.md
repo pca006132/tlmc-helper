@@ -215,13 +215,19 @@ Implementation rules:
 ## Rewriting and normalization rules
 
 Aggregation preprocessing for artists / album artists:
-- If a track has singular value, split by separators: `，` `、` `;` `,`.
+- If a track has singular value:
+  - Trim leading `Vo.` from the raw singular name.
+  - Then split by separators: `feat.`, `+`, ` x `, ` & `, `/`, `，`, `、`, `;`, `,`.
+  - Do not split inside parentheses (`()` / `（）`).
 - Trim names.
 - Normalize for rule generation:
   - lower-case
   - replace `'` `“` `”` with `"`
   - replace `＊` with `*`
 - If multiple names normalize to same value in one circle, generate rewriting entry mapping all variants to the lexicographically smallest original variant (not canonicalized). Users can later edit and choose canonical forms manually.
+- If singular-name splitting happened, also generate a rewriting entry:
+  - `from` = raw singular name (after leading `Vo.` trimming)
+  - `to` = split results
 
 Genre aggregation:
 - No split/implicit normalization required.
@@ -283,6 +289,7 @@ Rules:
 - Apply artist/album-artist rewriting and genre rewriting.
 - If `default genre` is set, use it for missing genre.
 - Write only changed tracks to `update-metadata.json` in metadata.json-compatible structure.
+- Also generate `structured-new.json` from metadata after applying the updates, so users can compare old/new structures.
 
 # `apply-tags` specification
 
