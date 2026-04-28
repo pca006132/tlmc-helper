@@ -26,6 +26,7 @@ We assume the executable is in a directory with a list of folders with the name 
 Within each `[CIRCLE_NAME]` folder, there are a list of rar files, where the names are in the following format: `YYYY.MM.DD [CATALOG_NUM] ALBUM_NAME [EVENT].rar`.
 For example, it can be `2026.04.28 [ABCD-0123] foo bar [c123].rar`, where the date is 2026.04.28, `CATALOG_NUM` is `ABCD-0123`, `ALBUM_NAME` is `foo bar`, and `EVENT` is `c123`.
 Note that `[EVENT]` is optional.
+`[CIRCLE_NAME]` does not need square brackets. We support circle directory names both with and without `[]`.
 
 We do not assume anything about the internals of the album.
 
@@ -34,6 +35,7 @@ We do not assume anything about the internals of the album.
 1. If there is a single flac file and a single cuesheet, this is trivial.
 2. If there are multiple flac files and cuesheets, and flac filenames correspond to cuesheet filenames, this is also trivial.
 3. Otherwise, consider flac and cuesheet to be related if one's name is a substring of another. If such association is non-ambiguous, use that association.
+4. If association is ambiguous, write details to `ambiguous-pairing.txt` and skip such ambiguous pairing.
 
 Exceptions:
 1. If there is no cuesheet in the album, just write to `verbose.log` saying that there is nothing to split in this path.
@@ -49,7 +51,8 @@ Also, the track files should be put into a subdirectory named `FLAC_NAME_WITHOUT
 
 Use chardetng for decoding, since the file may be in some CJK encoding or UTF-8/16 with BOM.
 If the cuesheet is not in standard encoding (ASCII/UTF-8 without BOM), log the path and encoding to `verbose.log`.
-If failed to parse the cuesheet using flac-codec, write the cuesheet path to `corrupt-cuesheet.txt`, and skip processing such flac-cuesheet pair.
+If failed to parse the cuesheet using custom parser, write the cuesheet path to `corrupt-cuesheet.txt`, and skip processing such flac-cuesheet pair.
+Also validate the calculated track durations from INDEX points. If any track duration is 0 or negative, treat cuesheet as corrupted, write to `corrupt-cuesheet.txt`, and skip that pair.
 
 # Cuesheet Parsing for Tagging
 
@@ -74,7 +77,7 @@ FILE "Faithless - Live in Berlin.mp3" MP3
 This should be simple enough where a simple handwritten line-by-line parser could work.
 
 In particular, what we want are:
-1. Top level REM tags, we only care about GENRE, DATE and COMMENT. These tags are mapped directly. If the date is missing, use the one from the album archive name. If genre or comment is missing, ignore them. 
+1. Top level REM tags, we only care about GENRE, DATE and COMMENT. These tags are mapped directly. If the date is missing, use the one from the album archive name; if archive is unavailable, use the album directory name date token (`YYYY.MM.DD ...`) as fallback. If genre or comment is missing, ignore them. 
 2. Top level PERFORMER tag, this maps to the ALBUMARTIST tag in the track file. If this is missing, use the circle name from the folder path.
 3. Top level TITLE tag, this maps to the ALBUM tag in the track file.
 4. Track ID, this maps to the TRACKNUMBER tag in the track file.
@@ -85,3 +88,26 @@ Also, note that we are working with with unicode, and for quoted values we may n
 
 If album title, track title or track performer are missing, treat that as an empty string and continue. Write to both `verbose.log` and `missing-info.txt` about this (including the flac file path and track id).
 
+If album tags require fallback from directory names (e.g., DATE from album directory name, ALBUMARTIST from circle directory name), and the required directory name is invalid, write to `error.log` and skip that album.
+
+---
+
+Do the following modification:
+
+1. Only extract the archive file if there is no existing folder with the same name.
+2. Do the processing for folders even if there is no associated rar file.
+3. Skip processing the folder if there are .flac.old or .cue.old files, as these indicates the folder is processed.
+
+These allow users to add/modify albums without the need to create an rar file.
+
+Mention these in the README files, in particular tell the users they can fix cuesheets and rerun the program.
+
+---
+
+I added a small flac file (duration: 1:53) in the `testdata` directory with correct folder structure.
+Generate a simple cuesheet for testing, write a test to check if the split result is correct (tags, duration), and revert the changes after testing.
+Also add the test to CI.
+
+In the code, log invalid directory names (e.g., invalid circle directory name or album directory name) to `invalid-names.txt`.
+If the album tags require using info from directory names but the directory name is invalid, log to `error.log` and skip the album processing.
+Also write these to READMEs.

@@ -13,3 +13,6 @@ walkdir = "2"
 
 [patch.crates-io]
 unrar = { git = "https://github.com/pca006132/unrar.rs" }
+
+[dev-dependencies]
+tempfile = "3"

@@ -22,6 +22,7 @@
       in
       {
         devShell = pkgs.mkShell {
+          LD_LIBRARY_PATH = "${pkgs.stdenv.cc.cc.lib}/lib";
           buildInputs = with pkgs; [
             (pkgs.fenix.complete.withComponents [
               "cargo"

@@ -50,29 +50,67 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
         if circle_name.starts_with('.') {
             continue;
         }
-        let albums = match fs::read_dir(&circle_path) {
+        let circle_valid = is_valid_circle_name(&circle_name);
+        if !circle_valid {
+            logger.append_audit("invalid-names.txt", &rel(exec_dir, &circle_path))?;
+        }
+        let circle_entries = match fs::read_dir(&circle_path) {
             Ok(v) => v,
             Err(err) => {
                 logger.error(&format!("read_dir {} error: {err}", rel(exec_dir, &circle_path)))?;
                 continue;
             }
         };
-        for album_entry in albums {
-            let album_entry = match album_entry {
+        let mut rar_by_album_dir: BTreeMap<PathBuf, PathBuf> = BTreeMap::new();
+        let mut album_dirs: BTreeMap<PathBuf, Option<PathBuf>> = BTreeMap::new();
+        for entry in circle_entries {
+            let entry = match entry {
                 Ok(v) => v,
                 Err(err) => {
                     logger.error(&format!("album entry error in {circle_name}: {err}"))?;
                     continue;
                 }
             };
-            let rar_path = album_entry.path();
-            if rar_path.extension().and_then(OsStr::to_str) != Some("rar") {
+            let path = entry.path();
+            if path.is_dir() {
+                album_dirs.entry(path).or_insert(None);
                 continue;
             }
-            if let Err(err) = process_archive(exec_dir, logger, &circle_name, &rar_path) {
+            if path.extension().and_then(OsStr::to_str) == Some("rar") {
+                let album_dir = path.with_extension("");
+                rar_by_album_dir.insert(album_dir, path);
+            }
+        }
+        for (album_dir, rar_path) in rar_by_album_dir {
+            album_dirs.insert(album_dir, Some(rar_path));
+        }
+        for (album_dir, rar_path) in album_dirs {
+            let ctx = AlbumContext {
+                circle_name: circle_name.clone(),
+                circle_valid,
+                album_dir: album_dir.clone(),
+                album_valid: album_dir
+                .file_name()
+                .and_then(OsStr::to_str)
+                .map(is_valid_album_name)
+                .unwrap_or(false),
+                rar_path: rar_path.clone(),
+            };
+            if !ctx.album_valid {
+                logger.append_audit("invalid-names.txt", &rel(exec_dir, &ctx.album_dir))?;
+            }
+            if let Err(err) = process_album_target(
+                exec_dir,
+                logger,
+                &ctx,
+            ) {
+                let target = ctx
+                    .rar_path
+                    .clone()
+                    .unwrap_or_else(|| ctx.album_dir.clone());
                 logger.error(&format!(
-                    "archive failed {}: {err}",
-                    rel(exec_dir, &rar_path)
+                    "album target failed {}: {err}",
+                    rel(exec_dir, &target)
                 ))?;
             }
         }
@@ -80,25 +118,42 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     Ok(())
 }
 
-fn process_archive(
+fn process_album_target(
     exec_dir: &Path,
     logger: &mut Logger,
-    circle_name: &str,
-    rar_path: &Path,
+    ctx: &AlbumContext,
 ) -> Result<(), String> {
-    let album_dir = rar_path.with_extension("");
-    logger.verbose(&format!("album: {}", rel(exec_dir, &album_dir)), false)?;
-    if !album_dir.exists() {
-        fs::create_dir_all(&album_dir).map_err(ioe)?;
-        extract_rar(rar_path, &album_dir).map_err(|e| e.to_string())?;
+    let album_dir = &ctx.album_dir;
+    logger.verbose(&format!("album: {}", rel(exec_dir, album_dir)), false)?;
+    if let Some(rar_path) = ctx.rar_path.as_deref() {
+        if !album_dir.exists() {
+            fs::create_dir_all(album_dir).map_err(ioe)?;
+            extract_rar(rar_path, album_dir).map_err(|e| e.to_string())?;
+            logger.verbose(
+                &format!("extracted from {}", rel(exec_dir, rar_path)),
+                true,
+            )?;
+        } else {
+            logger.verbose("album directory already exists, skipping extract", true)?;
+        }
+    } else if !album_dir.exists() {
+        return Ok(());
+    }
+    if has_processed_marker(album_dir) {
         logger.verbose(
-            &format!("extracted from {}", rel(exec_dir, rar_path)),
+            &format!(
+                "skip processed album (found .flac.old/.cue.old): {}",
+                rel(exec_dir, album_dir)
+            ),
             true,
         )?;
-    } else {
-        logger.verbose("album directory already exists, skipping extract", true)?;
+        return Ok(());
     }
-    process_album(exec_dir, logger, circle_name, rar_path, &album_dir)
+    process_album(
+        exec_dir,
+        logger,
+        ctx,
+    )
 }
 
 fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -116,10 +171,9 @@ fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error
 fn process_album(
     exec_dir: &Path,
     logger: &mut Logger,
-    circle_name: &str,
-    rar_path: &Path,
-    album_dir: &Path,
+    ctx: &AlbumContext,
 ) -> Result<(), String> {
+    let album_dir = &ctx.album_dir;
     let (flacs, cues) = scan_album_files(album_dir);
     if cues.is_empty() {
         logger.verbose(
@@ -128,7 +182,20 @@ fn process_album(
         )?;
         return Ok(());
     }
-    let pairs = pair_flac_cue(&flacs, &cues);
+    let pairing = pair_flac_cue(&flacs, &cues);
+    let pairs = pairing.pairs;
+    for info in pairing.ambiguous {
+        logger.append_audit("ambiguous-pairing.txt", &format!(
+            "{} | flac={} | cues={}",
+            rel(exec_dir, album_dir),
+            rel(exec_dir, &info.flac),
+            info.cues
+                .iter()
+                .map(|c| rel(exec_dir, c))
+                .collect::<Vec<_>>()
+                .join(" , ")
+        ))?;
+    }
     for f in &flacs {
         if !pairs.iter().any(|(pf, _)| pf == f) {
             logger.append_audit("missing-cue.txt", &rel(exec_dir, f))?;
@@ -144,7 +211,11 @@ fn process_album(
     if pairs.len() > 1 {
         logger.append_audit("multi-disc.txt", &rel(exec_dir, album_dir))?;
     }
-    let fallback_date = parse_archive_date(rar_path);
+    let fallback_date = ctx
+        .rar_path
+        .as_deref()
+        .and_then(parse_archive_date)
+        .or_else(|| album_dir.file_name().and_then(OsStr::to_str).and_then(parse_album_date));
     let is_multi_disc = pairs.len() > 1;
     for (flac_path, cue_path) in pairs {
         logger.verbose(
@@ -155,59 +226,86 @@ fn process_album(
             ),
             true,
         )?;
-        if let Err(err) = process_pair(
+        match process_pair(
             exec_dir,
             logger,
-            circle_name,
-            album_dir,
+            ctx,
             &flac_path,
             &cue_path,
             fallback_date.as_deref(),
             is_multi_disc,
         ) {
-            logger.error(&format!(
-                "pair failed {} / {}: {err}",
-                rel(exec_dir, &flac_path),
-                rel(exec_dir, &cue_path)
-            ))?;
+            Ok(()) => {}
+            Err(PairError::Pair(err)) => {
+                logger.error(&format!(
+                    "pair failed {} / {}: {err}",
+                    rel(exec_dir, &flac_path),
+                    rel(exec_dir, &cue_path)
+                ))?;
+            }
+            Err(PairError::SkipAlbum(err)) => {
+                logger.error(&format!("album skipped {}: {err}", rel(exec_dir, album_dir)))?;
+                return Ok(());
+            }
         }
     }
     Ok(())
 }
 
+fn has_processed_marker(album_dir: &Path) -> bool {
+    WalkDir::new(album_dir)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file())
+        .any(|e| {
+            let path = e.path();
+            path.extension().and_then(OsStr::to_str) == Some("old")
+                && path
+                    .file_stem()
+                    .and_then(OsStr::to_str)
+                    .map(|v| v.ends_with(".flac") || v.ends_with(".cue"))
+                    .unwrap_or(false)
+        })
+}
+
 fn process_pair(
     exec_dir: &Path,
     logger: &mut Logger,
-    circle_name: &str,
-    album_dir: &Path,
+    ctx: &AlbumContext,
     flac_path: &Path,
     cue_path: &Path,
     fallback_date: Option<&str>,
     use_disc_subdir: bool,
-) -> Result<(), String> {
-    let cue_text = decode_cue(exec_dir, logger, cue_path)?;
-    let cue = match parse_cue(&cue_text, fallback_date, circle_name) {
+) -> Result<(), PairError> {
+    let cue_text = decode_cue(exec_dir, logger, cue_path).map_err(PairError::Pair)?;
+    let mut cue = match parse_cue(&cue_text) {
         Ok(v) => v,
         Err(err) => {
-            logger.append_audit("corrupt-cuesheet.txt", &rel(exec_dir, cue_path))?;
-            return Err(err);
+            logger
+                .append_audit("corrupt-cuesheet.txt", &rel(exec_dir, cue_path))
+                .map_err(PairError::Pair)?;
+            return Err(PairError::Pair(err));
         }
     };
+    resolve_album_metadata(ctx, &mut cue, fallback_date)?;
     let out_dir = if use_disc_subdir {
-        album_dir.join(
+        ctx.album_dir.join(
             flac_path
                 .file_stem()
                 .and_then(OsStr::to_str)
                 .unwrap_or("disc"),
         )
     } else {
-        album_dir.to_path_buf()
+        ctx.album_dir.to_path_buf()
     };
-    fs::create_dir_all(&out_dir).map_err(ioe)?;
+    fs::create_dir_all(&out_dir).map_err(|e| PairError::Pair(ioe(e)))?;
 
-    split_and_tag(exec_dir, logger, flac_path, &out_dir, &cue)?;
-    rename_old(flac_path).map_err(ioe)?;
-    rename_old(cue_path).map_err(ioe)?;
+    split_and_tag(exec_dir, logger, flac_path, &out_dir, &cue).map_err(|e| {
+        let _ = logger.append_audit("corrupt-cuesheet.txt", &rel(exec_dir, cue_path));
+        PairError::Pair(format!("corrupt cuesheet timing: {e}"))
+    })?;
+    rename_old(flac_path).map_err(|e| PairError::Pair(ioe(e)))?;
+    rename_old(cue_path).map_err(|e| PairError::Pair(ioe(e)))?;
     Ok(())
 }
 
@@ -242,7 +340,10 @@ fn split_and_tag(
             total_samples
         };
         if end <= start {
-            continue;
+            return Err(format!(
+                "track {:02} has non-positive duration (start={start}, end={end})",
+                track.id
+            ));
         }
         let track_name = sanitize_file_part(track.title.as_deref().unwrap_or(""));
         let filename = format!("{:02} - {}.flac", track.id, track_name);
@@ -391,11 +492,15 @@ fn scan_album_files(album_dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     (flacs, cues)
 }
 
-fn pair_flac_cue(flacs: &[PathBuf], cues: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+fn pair_flac_cue(flacs: &[PathBuf], cues: &[PathBuf]) -> PairingResult {
     if flacs.len() == 1 && cues.len() == 1 {
-        return vec![(flacs[0].clone(), cues[0].clone())];
+        return PairingResult {
+            pairs: vec![(flacs[0].clone(), cues[0].clone())],
+            ambiguous: Vec::new(),
+        };
     }
     let mut result = Vec::new();
+    let mut ambiguous = Vec::new();
     let mut used_cue = vec![false; cues.len()];
 
     for flac in flacs {
@@ -429,12 +534,20 @@ fn pair_flac_cue(flacs: &[PathBuf], cues: &[PathBuf]) -> Vec<(PathBuf, PathBuf)>
             let i = candidates[0];
             used_cue[i] = true;
             result.push((flac.clone(), cues[i].clone()));
+        } else if candidates.len() > 1 {
+            ambiguous.push(AmbiguousMatch {
+                flac: flac.clone(),
+                cues: candidates.into_iter().map(|i| cues[i].clone()).collect(),
+            });
         }
     }
-    result
+    PairingResult {
+        pairs: result,
+        ambiguous,
+    }
 }
 
-fn parse_cue(input: &str, fallback_date: Option<&str>, circle_name: &str) -> Result<CueData, String> {
+fn parse_cue(input: &str) -> Result<CueData, String> {
     let mut top_rem: BTreeMap<String, String> = BTreeMap::new();
     let mut album_title = None;
     let mut album_artist = None;
@@ -488,10 +601,10 @@ fn parse_cue(input: &str, fallback_date: Option<&str>, circle_name: &str) -> Res
             }
             continue;
         }
-        if let Some(v) = line.strip_prefix("INDEX 01 ") {
-            if let Some(t) = current_track.as_mut() {
-                t.index01 = v.trim().to_string();
-            }
+        if let Some(v) = line.strip_prefix("INDEX 01 ")
+            && let Some(t) = current_track.as_mut()
+        {
+            t.index01 = v.trim().to_string();
         }
     }
     if let Some(t) = current_track.take() {
@@ -502,13 +615,10 @@ fn parse_cue(input: &str, fallback_date: Option<&str>, circle_name: &str) -> Res
     }
     Ok(CueData {
         genre: top_rem.get("GENRE").cloned(),
-        date: top_rem
-            .get("DATE")
-            .cloned()
-            .or_else(|| fallback_date.map(ToString::to_string)),
+        date: top_rem.get("DATE").cloned(),
         comment: top_rem.get("COMMENT").cloned(),
         album_title,
-        album_artist: Some(album_artist.unwrap_or_else(|| circle_name.to_string())),
+        album_artist,
         tracks,
     })
 }
@@ -554,16 +664,60 @@ fn sanitize_file_part(v: &str) -> String {
 
 fn parse_archive_date(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
-    let token = stem.split_whitespace().next()?;
+    parse_album_date(stem)
+}
+
+fn resolve_album_metadata(
+    ctx: &AlbumContext,
+    cue: &mut CueData,
+    fallback_date: Option<&str>,
+) -> Result<(), PairError> {
+    if cue.date.is_none() {
+        if let Some(v) = fallback_date {
+            cue.date = Some(v.to_string());
+        } else if !ctx.album_valid {
+            return Err(PairError::SkipAlbum(
+                "missing DATE tag and invalid album directory name".to_string(),
+            ));
+        }
+    }
+    if cue.album_artist.is_none() {
+        if ctx.circle_valid {
+            cue.album_artist = Some(ctx.circle_name.clone());
+        } else {
+            return Err(PairError::SkipAlbum(
+                "missing PERFORMER tag and invalid circle directory name".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn parse_album_date(name: &str) -> Option<String> {
+    let token = name.split_whitespace().next()?;
     let mut p = token.split('.');
     let y = p.next()?;
     let m = p.next()?;
     let d = p.next()?;
-    if y.len() == 4 && m.len() == 2 && d.len() == 2 {
+    if y.len() == 4
+        && m.len() == 2
+        && d.len() == 2
+        && y.chars().all(|c| c.is_ascii_digit())
+        && m.chars().all(|c| c.is_ascii_digit())
+        && d.chars().all(|c| c.is_ascii_digit())
+    {
         Some(format!("{y}-{m}-{d}"))
     } else {
         None
     }
+}
+
+fn is_valid_circle_name(name: &str) -> bool {
+    !name.trim().is_empty()
+}
+
+fn is_valid_album_name(name: &str) -> bool {
+    parse_album_date(name).is_some()
 }
 
 fn rel(exec_dir: &Path, p: &Path) -> String {
@@ -654,4 +808,95 @@ struct TrackResult {
     out_path: PathBuf,
     track_id: u32,
     missing_info: bool,
+}
+
+struct AlbumContext {
+    circle_name: String,
+    circle_valid: bool,
+    album_dir: PathBuf,
+    album_valid: bool,
+    rar_path: Option<PathBuf>,
+}
+
+struct PairingResult {
+    pairs: Vec<(PathBuf, PathBuf)>,
+    ambiguous: Vec<AmbiguousMatch>,
+}
+
+struct AmbiguousMatch {
+    flac: PathBuf,
+    cues: Vec<PathBuf>,
+}
+
+enum PairError {
+    Pair(String),
+    SkipAlbum(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flac_codec::metadata::{self, VorbisComment, fields};
+    use tempfile::TempDir;
+
+    #[test]
+    fn split_tracks_have_expected_tags_and_duration() {
+        let temp = TempDir::new().expect("tempdir");
+        copy_dir_all(Path::new("testdata"), temp.path()).expect("copy testdata");
+        let exec = temp.path().to_path_buf();
+
+        let mut logger = Logger::new(&exec).expect("logger");
+        run(&exec, &mut logger).expect("run");
+
+        let album = exec.join("[circle]/2026.01.01 [ABCD-0123] foo bar [c123]");
+        let t1 = album.join("01 - Track One.flac");
+        let t2 = album.join("02 - Track Two.flac");
+        assert!(t1.exists(), "track 1 should exist");
+        assert!(t2.exists(), "track 2 should exist");
+
+        assert_track(&t1, "Track One", "Test Performer", "2026-01-01", 60, 3);
+        assert_track(&t2, "Track Two", "Test Performer", "2026-01-01", 53, 3);
+    }
+
+    fn assert_track(
+        path: &Path,
+        title: &str,
+        artist: &str,
+        date: &str,
+        expected_secs: u64,
+        tolerance_secs: u64,
+    ) {
+        let vc = metadata::block::<_, VorbisComment>(path)
+            .expect("read vorbis block")
+            .expect("vorbis block present");
+        assert_eq!(vc.get(fields::TITLE).unwrap_or(""), title);
+        assert_eq!(vc.get(fields::ARTIST).unwrap_or(""), artist);
+        assert_eq!(vc.get(fields::DATE).unwrap_or(""), date);
+
+        let reader = FlacSampleReader::open(path).expect("read flac");
+        let total_samples = reader.total_samples().expect("total samples");
+        let sample_rate = u64::from(reader.sample_rate());
+        let secs = total_samples / sample_rate;
+        let lower = expected_secs.saturating_sub(tolerance_secs);
+        let upper = expected_secs + tolerance_secs;
+        assert!(
+            (lower..=upper).contains(&secs),
+            "duration {secs}s should be in [{lower}, {upper}]"
+        );
+    }
+
+    fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), std::io::Error> {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let to = dst.join(entry.file_name());
+            if file_type.is_dir() {
+                copy_dir_all(&entry.path(), &to)?;
+            } else {
+                fs::copy(entry.path(), to)?;
+            }
+        }
+        Ok(())
+    }
 }

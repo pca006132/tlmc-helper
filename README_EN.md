@@ -27,6 +27,8 @@ root/
   tlmc.exe
 ```
 
+Circle folder names can be bracketed (`[CircleName]`) or plain (`CircleName`).
+
 ## How to use
 
 1. Double-click the executable (Windows).
@@ -41,10 +43,12 @@ Behavior:
 
 ## What happens after conversion
 
-- each `.rar` is extracted to a same-name folder (without `.rar`)
+- `.rar` is extracted to a same-name folder (without `.rar`) only when that folder does not already exist
+- album folders are processed even if there is no matching `.rar` file
 - FLAC/CUE are paired and processed
 - output files are named `TRACK_ID - TRACK_NAME.flac`
 - original processed `.flac` and `.cue` are renamed to `*.old`
+- folders containing `.flac.old` or `.cue.old` are treated as already processed and skipped
 - for multi-disc albums, split tracks are placed in subfolders by FLAC name
 
 ## Audit files and what they mean
@@ -70,6 +74,12 @@ All files are generated in the execution directory. Paths are relative for easie
 - `missing-info.txt`
   - missing important tags (album/track title/performer)
   - fill metadata manually later
+- `invalid-names.txt`
+  - circle or album directory names that do not follow expected naming
+  - rename/fix and rerun
+- `ambiguous-pairing.txt`
+  - flac and cue had multiple possible matches (not uniquely pairable)
+  - rename/organize files and rerun
 
 ## After the tool finishes
 
@@ -82,3 +92,7 @@ Recommended checklist:
 5. Fill metadata listed in `missing-info.txt`.
 6. Spot-check playback/cut points on several albums.
 7. Delete `*.old` originals only after verification.
+
+If you fix cuesheets and want to rerun, note that folders with `.flac.old` / `.cue.old` are skipped. Move or rename those `.old` files first, then run again.
+If cue is missing `DATE` or top-level `PERFORMER`, the tool may need directory names as fallback metadata; if those names are invalid, it logs to `error.log` and skips that album.
+If cue timing yields zero/negative track duration, it is treated as corrupt and logged to `corrupt-cuesheet.txt`.
