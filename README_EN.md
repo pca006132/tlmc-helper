@@ -31,9 +31,89 @@ Circle folder names can be bracketed (`[CircleName]`) or plain (`CircleName`).
 
 ## How to use
 
-1. Double-click the executable (Windows).
+### One-click splitting (`split-album`)
+
+1. Run `split-album` (double-click exe on Windows).
 2. Wait until processing is done.
-3. Review `verbose.log` and audit files for any manual follow-up.
+3. Review `verbose.log`, `error.log`, and `audit.json` for manual follow-up.
+
+### Metadata workflow (new binaries)
+
+1. Scan current tags:
+   - `scan-albums`
+   - output: `metadata.json`
+2. Build editable structure:
+   - `analyze-albums`
+   - if `structured.json` is missing, it generates `structured.json`
+3. Edit `structured.json` (rewrite rules, default genre, etc.).
+4. Generate update plan:
+   - run `analyze-albums` again
+   - if `structured.json` exists, it generates `update-metadata.json`
+5. Apply updates:
+   - `apply-tags`
+   - applies `update-metadata.json` in parallel
+
+Command example (from project root):
+```bash
+cargo run --bin scan-albums
+cargo run --bin analyze-albums
+# edit structured.json
+cargo run --bin analyze-albums
+cargo run --bin apply-tags
+```
+
+## `structured.json` explained (manual edit file)
+
+`structured.json` is the intermediate file that combines:
+
+- analysis output from `metadata.json`
+- user-editable rewrite/default rules
+
+Flow:
+
+1. First `analyze-albums` run creates `structured.json`.
+2. You edit it.
+3. Second `analyze-albums` run reads it and creates `update-metadata.json`.
+
+Main fields (per circle):
+
+- `all album artists` / `all artists` / `all genres`
+  - aggregated, deduplicated, sorted candidates
+- `album artists rewriting` / `artists rewriting` / `genre rewriting`
+  - rewrite rules in form:
+  - `{ "from": ["A", "B"], "to": ["C"] }`
+- `default genre`
+  - optional fallback genre for tracks missing genre
+- `albums`
+  - album-level data
+  - `album artists`: album-level artist list
+  - `discs`: track grouping by disc (`TRACK_PATH` -> track fields)
+
+Minimal example:
+
+```json
+{
+  "CircleName": {
+    "all album artists": ["AAA", "Aaa"],
+    "album artists rewriting": [
+      { "from": ["AAA", "Aaa"], "to": ["AAA"] }
+    ],
+    "all artists": ["X", "Y"],
+    "artists rewriting": [],
+    "all genres": ["Trance", "Electronic"],
+    "genre rewriting": [],
+    "default genre": "Electronic",
+    "albums": {}
+  }
+}
+```
+
+Editing tips:
+
+1. Start with rewrite rules (`* rewriting`) first.
+2. Set `default genre` only if you want missing genres auto-filled.
+3. Review `albums -> ... -> discs` if disc grouping looks suspicious.
+4. Re-run `analyze-albums` after edits to produce `update-metadata.json`.
 
 Behavior:
 
@@ -51,9 +131,9 @@ Behavior:
 - folders containing `.flac.old` or `.cue.old` are treated as already processed and skipped
 - for multi-disc albums, split tracks are placed in subfolders by FLAC name
 
-## Audit files and what they mean
+## Audit outputs and JSON structure
 
-All files are generated in the execution directory. Paths are relative for easier auditing.
+Outputs are generated in the execution directory. Audit paths are relative for easier triage.
 
 - `verbose.log`
   - detailed process log (also printed to stdout)
@@ -61,38 +141,48 @@ All files are generated in the execution directory. Paths are relative for easie
 - `error.log`
   - hard errors (failed album/pair processing)
   - check this first
-- `corrupt-cuesheet.txt`
-  - cue files that failed parsing
-  - usually requires fixing/replacing cue manually
-- `multi-disc.txt`
-  - albums with multiple flac-cue pairs
-  - review naming/disc organization manually
-- `missing-cue.txt`
-  - flac files with no matched cue
-- `missing-flac.txt`
-  - cue files with no matched flac
-- `missing-info.txt`
-  - missing important tags (album/track title/performer)
-  - fill metadata manually later
-- `invalid-names.txt`
-  - circle or album directory names that do not follow expected naming
-  - rename/fix and rerun
-- `ambiguous-pairing.txt`
-  - flac and cue had multiple possible matches (not uniquely pairable)
-  - rename/organize files and rerun
+- `audit.json`
+  - unified audit output (pretty JSON)
+  - shape example:
+```json
+{
+  "missing_cue": ["circle/album/foo.flac"],
+  "missing_flac": ["circle/album/foo.cue"],
+  "multi_disc": ["circle/album"],
+  "corrupt_cuesheet": ["circle/album/foo.cue"],
+  "missing_info": ["circle/album/foo.flac track 01"],
+  "invalid_names": ["circle_or_album_path"],
+  "ambiguous_pairing": ["circle/album | flac=... | cues=..."],
+  "corrupted_tracks": ["circle/album/foo.mp3"],
+  "disc_classification": ["circle/album"],
+  "different_album_artist": ["circle/album"]
+}
+```
+  - field meanings:
+    - `missing_cue`: flac without cue
+    - `missing_flac`: cue without flac
+    - `multi_disc`: album has multiple pair groups
+    - `corrupt_cuesheet`: cue invalid (including zero/negative duration)
+    - `missing_info`: missing key tag fields
+    - `invalid_names`: invalid circle/album directory names
+    - `ambiguous_pairing`: non-unique cue/flac association
+    - `corrupted_tracks`: unreadable audio during scan
+    - `disc_classification`: disc grouping fallback triggered
+    - `different_album_artist`: inconsistent album-artist signals
 
 ## After the tool finishes
 
 Recommended checklist:
 
 1. Check `error.log`.
-2. Fix entries in `corrupt-cuesheet.txt`.
-3. Resolve `missing-cue.txt` / `missing-flac.txt`.
-4. Review `multi-disc.txt` output structure and naming.
-5. Fill metadata listed in `missing-info.txt`.
+2. Fix entries under `corrupt_cuesheet` in `audit.json`.
+3. Resolve `missing_cue` / `missing_flac` in `audit.json`.
+4. Review `multi_disc` / `ambiguous_pairing` in `audit.json`.
+5. Fill metadata for entries under `missing_info` in `audit.json`.
 6. Spot-check playback/cut points on several albums.
 7. Delete `*.old` originals only after verification.
 
 If you fix cuesheets and want to rerun, note that folders with `.flac.old` / `.cue.old` are skipped. Move or rename those `.old` files first, then run again.
 If cue is missing `DATE` or top-level `PERFORMER`, the tool may need directory names as fallback metadata; if those names are invalid, it logs to `error.log` and skips that album.
-If cue timing yields zero/negative track duration, it is treated as corrupt and logged to `corrupt-cuesheet.txt`.
+If cue timing yields zero/negative track duration, it is treated as corrupt and logged under `corrupt_cuesheet` in `audit.json`.
+`metadata.json`, `structured.json`, `update-metadata.json`, and `audit.json` are all pretty-printed JSON.

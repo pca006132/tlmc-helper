@@ -50,7 +50,7 @@ Also, the track files should be put into a subdirectory named `FLAC_NAME_WITHOUT
 # Reading Cuesheet
 
 Use chardetng for decoding, since the file may be in some CJK encoding or UTF-8/16 with BOM.
-If the cuesheet is not in standard encoding (ASCII/UTF-8 without BOM), log the path and encoding to `verbose.log`.
+If the cuesheet is not in standard encoding (ASCII/UTF-8), log the path and encoding to `verbose.log`.
 If failed to parse the cuesheet using custom parser, write the cuesheet path to `corrupt-cuesheet.txt`, and skip processing such flac-cuesheet pair.
 Also validate the calculated track durations from INDEX points. If any track duration is 0 or negative, treat cuesheet as corrupted, write to `corrupt-cuesheet.txt`, and skip that pair.
 
@@ -111,3 +111,345 @@ Also add the test to CI.
 In the code, log invalid directory names (e.g., invalid circle directory name or album directory name) to `invalid-names.txt`.
 If the album tags require using info from directory names but the directory name is invalid, log to `error.log` and skip the album processing.
 Also write these to READMEs.
+
+---
+
+# Multi-binary Architecture (Current)
+
+This project now has multiple binaries:
+
+1. `split-album`
+   - The original split workflow (extract -> pair -> split -> tag).
+   - This was previously in `src/main.rs` and is now explicitly the `split-album` binary target.
+   - Logger is shared and moved out of split implementation.
+2. `scan-albums`
+   - Scans audio files and writes `metadata.json`.
+3. `analyze-albums`
+   - Mode A (analysis): generate `structured.json` when it does not exist.
+   - Mode B (generate update): read edited `structured.json` and emit `update-metadata.json`.
+4. `apply-tags`
+   - Applies updates from `update-metadata.json` back to files.
+
+Shared logger:
+- `Logger` is a shared module, not embedded in one binary.
+- Audit output should still be mirrored to `verbose.log`.
+
+# Additional/Updated Rules
+
+## Pairing
+
+- Ambiguous FLAC/CUE matches must be logged to `ambiguous-pairing.txt`.
+- Ambiguous matches are not auto-resolved.
+
+## Circle naming
+
+- Circle directory names with and without `[]` are supported.
+
+## Cuesheet timing validation
+
+- Validate computed track durations from INDEX points.
+- Any track with duration `<= 0` is treated as corrupted cuesheet.
+- Log such cue to `corrupt-cuesheet.txt` and skip pair processing.
+
+# `scan-albums` specification
+
+Output file: `metadata.json`
+
+Format:
+```json
+{
+  "TRACK_PATH": {
+    "METADATA": "VALUE",
+    "METADATA2": ["VALUE"]
+  }
+}
+```
+
+Metadata keys of interest (all optional):
+- `Title`
+- `Artists` (string list)
+- `Date`
+- `Year` (`YYYY.MM.DD` style when available)
+- `Album artists` (string list)
+- `Album title`
+- `Track number`
+- `Total tracks`
+- `Disc number`
+- `Total discs`
+- `Genre`
+- `Comment`
+
+Implementation rules:
+- Use `audiotags`.
+- Scan file types: `flac`, `mp3`, `m4a`.
+- Support `scan-filter.txt` (one circle folder name per line).
+  - If missing: scan all circles in current directory.
+- Log each album directory to `verbose.log`.
+- Corrupted/unreadable audio files go to `corrupted.txt`.
+- Scanning should be parallel.
+
+# `analyze-albums` specification
+
+## Mode selection
+
+- If `structured.json` does not exist -> analysis mode.
+- Else -> generate update mode.
+
+## Analysis mode
+
+1. Determine circle and album from track path.
+2. Disc grouping:
+   - If all tracks have same album title and no disc number -> all in disc 1.
+   - Else, prioritize explicit disc numbers.
+   - Remaining tracks grouped by album title and assigned new consecutive disc numbers.
+   - If fallback grouping is used, log album path to `disc-classification.txt`.
+3. Album-artist checks:
+   - Aggregate album artists in circle.
+   - If album has inconsistent album-artist sets across tracks, or album artists do not match circle naming expectation, log to `different-album-artist.txt`.
+4. Artist checks:
+   - Aggregate artists in circle.
+   - Missing artist tags -> `missing-info.txt`.
+5. Genre aggregation:
+   - Aggregate all genres in circle.
+
+## Rewriting and normalization rules
+
+Aggregation preprocessing for artists / album artists:
+- If a track has singular value, split by separators: `，` `、` `;` `,`.
+- Trim names.
+- Normalize for rule generation:
+  - lower-case
+  - replace `'` `“` `”` with `"`
+  - replace `＊` with `*`
+- If multiple names normalize to same value in one circle, generate rewriting entry mapping all variants to the lexicographically smallest original variant (not canonicalized). Users can later edit and choose canonical forms manually.
+
+Genre aggregation:
+- No split/implicit normalization required.
+
+Rewriting semantics:
+- Each entry:
+```json
+{
+  "from": ["NAME1", "NAME2"],
+  "to": ["NAME1", "NAME2"]
+}
+```
+- For genre rewriting, `to` must have exactly one element.
+- Apply from first rule to last.
+- Match exact names from `from`.
+- For singular artist/album-artist value, split first, then rewrite each piece.
+- Rewritten outputs are exempt from further rewrites.
+- Deduplicate final results.
+
+## `structured.json` shape
+
+```json
+{
+  "CIRCLE_NAME": {
+    "all album artists": [],
+    "album artists rewriting": [],
+    "all artists": [],
+    "artists rewriting": [],
+    "all genres": [],
+    "genre rewriting": [],
+    "default genre": "",
+    "albums": {
+      "ALBUM_NAME": {
+        "album artists": [],
+        "discs": [
+          {
+            "TRACK_PATH": {
+              "title": "",
+              "date": "",
+              "track number": 0,
+              "artists": [],
+              "genre": ""
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Rules:
+- `"all ***"` lists must be sorted and deduplicated.
+- `"default genre"` is optional.
+
+## Generate update mode
+
+- Read edited `structured.json`.
+- Apply artist/album-artist rewriting and genre rewriting.
+- If `default genre` is set, use it for missing genre.
+- Write only changed tracks to `update-metadata.json` in metadata.json-compatible structure.
+
+# `apply-tags` specification
+
+- Read `update-metadata.json`.
+- Apply updates to track files.
+- Intended for retagging only (no audio re-encode).
+
+---
+
+1. Refactor src/main.rs to move the logger out.
+2. Make the current src/main.rs a separate binary named `split-album`. Rename the file as needed.
+3. Add the following binaries.
+
+# Scan
+
+Binary name: `scan-albums`
+
+Purpose: scan tracks and output a `metadata.json` containing their metadata.
+
+Format:
+```
+{
+  "TRACK_PATH": {
+    "METADATA": "VALUE",
+    "METADATA2": ["VALUE"],
+  }
+}
+```
+
+Metadata of interest:
+- Title
+- Artists (list of strings)
+- Date
+- Year ("YYYY.MM.DD")
+- Album artists (list of strings)
+- Album title
+- Track number
+- Total tracks
+- Disc number
+- Total discs
+- Genre
+- Comment
+
+All are optional.
+
+Should use audiotags to scan tracks.
+Should scan flac, mp3, m4a files.
+
+Should check for a `scan-filter.txt` for a list of folders to scan (each line is the name of one folder).
+If there is no such file, scan every circle in the current directory, assuming the same directory structure as the directory structure section.
+Log to `verbose.log` the current album directory.
+If the audio file is corrupted, write to `corrupted.txt` the path of the file and continue.
+
+The scan should be done in parallel.
+
+# Analyze
+
+Binary name: `analyze-albums`
+
+Purpose: There are two modes.
+1. Analysis mode: If `structured.json` does not exist, analyze `metadata.json`, generate `structured.json` for user to edit.
+2. Generate update mode: Read modified `structured.json`, generate `update-metadata.json` for retagging.
+
+## Analysis mode
+
+1. Use the path to determine the circle and album.
+2. For tracks in the same album, group them by disc. There are several cases:
+  1. The album title metadata are the same, and all has no disc number. All are in disc 1.
+  2. The album title metadata are the same and has disc number. Use that.
+  3. The album title metadata are different, group by that and randomly assign disc number (consecutive starting from 1) 
+  Rule 2 is applied first. If there are tracks that remain, e.g., with different album title or missing disc number, apply rule 3, and disc number should be different from disc numbers applied in rule 2.
+  If rule 3 is triggered, log the album path to `disc-classification.txt` so users will check that.
+3. Aggregate all album artists for albums in the same circle. For albums where none of the album artists match the circle name (from the path) or contains tracks with different sets of album artists, log the album path to `different-album-artist.txt`.   
+4. Aggregate all artists for albums in the same circle. For tracks with missing artists tag, log the album path to `missing-info.txt`.
+5. Aggregate all genres for albums in the same circle.
+
+## Generate update mode:
+
+1. Apply rewriting rules to album artists and artists of albums and tracks.
+2. Apply rewriting rules for genres. If there is a `default genre`, use this for the genre field for tracks without genre info.
+3. Generate `update-metadata.json`, which has the same format with `metadata.json` but only contain tracks that need to be updated.
+
+## Aggregation and Rewriting
+
+For aggregation, do the following processing:
+- If the tag is singular, i.e., only one artist/album artist for the track, try to split the name by separators `，`, `、`, `;`, `,`.
+- Trim the names.
+- Normalize the names by converting it to lower case and substitute `'` `“` and `”` by `"`, `＊` by `*`. If multiple names in the same circle normalize to the same string, add a rewriting rule that maps these names to the lexicographically smallest original variant. This chosen value may still be non-canonical; users should decide the final canonical form by editing `structured.json`.
+
+Note that we don't need to do splitting and normalization for genre, since each track can only have one genre.
+
+For rewriting, each entry is in the form of
+```json
+{
+  "from": ["NAME1", "NAME2"],
+  "to": ["NAME1", "NAME2"]
+}
+```
+
+For genre rewriting, the `to` field can only contain one element.
+The rewriting rules work in the following way:
+1. Before splitting, check if the name matches any of the names in the `from` field. If yes, the name is replaced with all names in the `to` field. Replaced names are exempted from rewriting.
+2. If the artists/album artists tag of the track has only one name, split that name and apply rule 1 for each of them.
+3. Entries are matched from the first one to the last one. And note that normalization is expressed as rewriting rules, we do not perform implicit normalization here.
+4. Results are deduplicated.
+
+Example:
+```json
+[
+  {
+    "from": ["AA", "BB"],
+    "to": ["CC", "DD"],
+  },
+  {
+    "from": ["CC", "DD"],
+    "to": ["EE"],
+  },
+]
+```
+
+If we have `["AA", "EE"]`, this is rewritten into `["CC", "DD", "EE"]`.
+If we have `["CC", "DD"]`, this is rewritten into `["EE"]`.
+
+## Format of `structured.json`:
+
+```json
+{
+  "CIRCLE_NAME": {
+    "all album artists": [
+      "NAME1",
+      "NAME2"
+    ],
+    "album artists rewriting": [],
+    "all artists": [
+      "NAME1",
+      "NAME2"
+    ],
+    "artists rewriting": [],
+    "all genres": [ "GENRE1", "GENRE2" ],
+    "genre rewriting": [],
+    "default genre": "",
+    "albums": {
+      "ALBUM_NAME": {
+        "album artists": [ "NAME1", "NAME2" ],
+        "discs": [
+          {
+            "TRACK_PATH": {
+              "title": "TITLE",
+              "date": "YYYY.MM.DD",
+              "track number": TRACK_NUMBER,
+              "artists": [ "NAME1", "NAME2" ],
+              "genre": "GENRE",
+            }   
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+In particular, the list of "all ***" should be sorted in alphabetical order and deduplicated.
+`default genre` is optional.
+
+# Apply tags
+
+Binary name: `apply-tags`
+
+Purpose: Update tracks according to `update-metadata.json`.
+

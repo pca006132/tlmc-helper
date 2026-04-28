@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
-use std::fs::{self, File, OpenOptions};
-use std::io::{Cursor, Write};
+use std::fs::{self};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -10,6 +10,7 @@ use encoding_rs::UTF_8;
 use flac_codec::decode::{FlacSampleReader, Metadata};
 use flac_codec::encode::{FlacSampleWriter, Options};
 use rayon::prelude::*;
+use tlmc::logger::{Logger, ioe, rel};
 use unrar::Archive;
 use walkdir::WalkDir;
 
@@ -52,7 +53,7 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
         }
         let circle_valid = is_valid_circle_name(&circle_name);
         if !circle_valid {
-            logger.append_audit("invalid-names.txt", &rel(exec_dir, &circle_path))?;
+            logger.append_audit("invalid_names", &rel(exec_dir, &circle_path))?;
         }
         let circle_entries = match fs::read_dir(&circle_path) {
             Ok(v) => v,
@@ -97,7 +98,7 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
                 rar_path: rar_path.clone(),
             };
             if !ctx.album_valid {
-                logger.append_audit("invalid-names.txt", &rel(exec_dir, &ctx.album_dir))?;
+                logger.append_audit("invalid_names", &rel(exec_dir, &ctx.album_dir))?;
             }
             if let Err(err) = process_album_target(
                 exec_dir,
@@ -185,7 +186,7 @@ fn process_album(
     let pairing = pair_flac_cue(&flacs, &cues);
     let pairs = pairing.pairs;
     for info in pairing.ambiguous {
-        logger.append_audit("ambiguous-pairing.txt", &format!(
+        logger.append_audit("ambiguous_pairing", &format!(
             "{} | flac={} | cues={}",
             rel(exec_dir, album_dir),
             rel(exec_dir, &info.flac),
@@ -198,18 +199,18 @@ fn process_album(
     }
     for f in &flacs {
         if !pairs.iter().any(|(pf, _)| pf == f) {
-            logger.append_audit("missing-cue.txt", &rel(exec_dir, f))?;
+            logger.append_audit("missing_cue", &rel(exec_dir, f))?;
             logger.verbose(&format!("missing cue: {}", rel(exec_dir, f)), true)?;
         }
     }
     for c in &cues {
         if !pairs.iter().any(|(_, pc)| pc == c) {
-            logger.append_audit("missing-flac.txt", &rel(exec_dir, c))?;
+            logger.append_audit("missing_flac", &rel(exec_dir, c))?;
             logger.verbose(&format!("missing flac: {}", rel(exec_dir, c)), true)?;
         }
     }
     if pairs.len() > 1 {
-        logger.append_audit("multi-disc.txt", &rel(exec_dir, album_dir))?;
+        logger.append_audit("multi_disc", &rel(exec_dir, album_dir))?;
     }
     let fallback_date = ctx
         .rar_path
@@ -282,7 +283,7 @@ fn process_pair(
         Ok(v) => v,
         Err(err) => {
             logger
-                .append_audit("corrupt-cuesheet.txt", &rel(exec_dir, cue_path))
+                .append_audit("corrupt_cuesheet", &rel(exec_dir, cue_path))
                 .map_err(PairError::Pair)?;
             return Err(PairError::Pair(err));
         }
@@ -301,7 +302,7 @@ fn process_pair(
     fs::create_dir_all(&out_dir).map_err(|e| PairError::Pair(ioe(e)))?;
 
     split_and_tag(exec_dir, logger, flac_path, &out_dir, &cue).map_err(|e| {
-        let _ = logger.append_audit("corrupt-cuesheet.txt", &rel(exec_dir, cue_path));
+        let _ = logger.append_audit("corrupt_cuesheet", &rel(exec_dir, cue_path));
         PairError::Pair(format!("corrupt cuesheet timing: {e}"))
     })?;
     rename_old(flac_path).map_err(|e| PairError::Pair(ioe(e)))?;
@@ -329,6 +330,15 @@ fn split_and_tag(
     let mut starts = Vec::with_capacity(cue.tracks.len());
     for t in &cue.tracks {
         starts.push(cue_index_to_sample(&t.index01, sample_rate));
+    }
+    if let Some(last_start) = starts.last()
+        && *last_start > total_samples
+    {
+        let track_id = cue.tracks.last().map(|t| t.id).unwrap_or(0);
+        return Err(format!(
+            "track {:02} offset exceeds flac duration (offset={}, total_samples={})",
+            track_id, last_start, total_samples
+        ));
     }
 
     let mut jobs = Vec::new();
@@ -370,7 +380,7 @@ fn split_and_tag(
         logger.verbose(&format!("wrote {}", rel(exec_dir, &result.out_path)), true)?;
         if result.missing_info {
             let line = format!("{} track {:02}", rel(exec_dir, flac_path), result.track_id);
-            logger.append_audit("missing-info.txt", &line)?;
+            logger.append_audit("missing_info", &line)?;
             logger.verbose(&format!("missing tag info: {line}"), true)?;
         }
     }
@@ -453,7 +463,7 @@ fn decode_cue(exec_dir: &Path, logger: &mut Logger, cue_path: &Path) -> Result<S
     let mut detector = EncodingDetector::new(Iso2022JpDetection::Allow);
     detector.feed(&data, true);
     let encoding = detector.guess(None, Utf8Detection::Allow);
-    if encoding != UTF_8 || has_bom(&data) {
+    if encoding != UTF_8 {
         logger.verbose(
             &format!(
                 "non-standard cue encoding {}: {}",
@@ -465,12 +475,6 @@ fn decode_cue(exec_dir: &Path, logger: &mut Logger, cue_path: &Path) -> Result<S
     }
     let (text, _, _) = encoding.decode(&data);
     Ok(text.into_owned())
-}
-
-fn has_bom(data: &[u8]) -> bool {
-    data.starts_with(&[0xEF, 0xBB, 0xBF])
-        || data.starts_with(&[0xFF, 0xFE])
-        || data.starts_with(&[0xFE, 0xFF])
 }
 
 fn scan_album_files(album_dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
@@ -720,61 +724,8 @@ fn is_valid_album_name(name: &str) -> bool {
     parse_album_date(name).is_some()
 }
 
-fn rel(exec_dir: &Path, p: &Path) -> String {
-    p.strip_prefix(exec_dir)
-        .unwrap_or(p)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
 fn fe(err: flac_codec::Error) -> String {
     err.to_string()
-}
-
-fn ioe(err: std::io::Error) -> String {
-    err.to_string()
-}
-
-struct Logger {
-    exec_dir: PathBuf,
-    verbose: File,
-    error: File,
-}
-
-impl Logger {
-    fn new(exec_dir: &Path) -> Result<Self, std::io::Error> {
-        Ok(Self {
-            exec_dir: exec_dir.to_path_buf(),
-            verbose: open_append(exec_dir.join("verbose.log"))?,
-            error: open_append(exec_dir.join("error.log"))?,
-        })
-    }
-
-    fn verbose(&mut self, msg: &str, indent: bool) -> Result<(), String> {
-        let line = if indent {
-            format!("  {msg}\n")
-        } else {
-            format!("{msg}\n")
-        };
-        print!("{line}");
-        self.verbose.write_all(line.as_bytes()).map_err(ioe)
-    }
-
-    fn error(&mut self, msg: &str) -> Result<(), String> {
-        self.error
-            .write_all(format!("{msg}\n").as_bytes())
-            .map_err(ioe)
-    }
-
-    fn append_audit(&mut self, file: &str, line: &str) -> Result<(), String> {
-        let mut f = open_append(self.exec_dir.join(file)).map_err(ioe)?;
-        f.write_all(format!("{line}\n").as_bytes()).map_err(ioe)?;
-        self.verbose(&format!("audit {file}: {line}"), true)
-    }
-}
-
-fn open_append(path: PathBuf) -> Result<File, std::io::Error> {
-    OpenOptions::new().create(true).append(true).open(path)
 }
 
 #[derive(Debug, Clone)]
