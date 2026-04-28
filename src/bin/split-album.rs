@@ -91,20 +91,16 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
                 circle_valid,
                 album_dir: album_dir.clone(),
                 album_valid: album_dir
-                .file_name()
-                .and_then(OsStr::to_str)
-                .map(is_valid_album_name)
-                .unwrap_or(false),
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .map(is_valid_album_name)
+                    .unwrap_or(false),
                 rar_path: rar_path.clone(),
             };
             if !ctx.album_valid {
                 logger.append_audit("invalid_names", &rel(exec_dir, &ctx.album_dir))?;
             }
-            if let Err(err) = process_album_target(
-                exec_dir,
-                logger,
-                &ctx,
-            ) {
+            if let Err(err) = process_album_target(exec_dir, logger, &ctx) {
                 let target = ctx
                     .rar_path
                     .clone()
@@ -119,21 +115,14 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     Ok(())
 }
 
-fn process_album_target(
-    exec_dir: &Path,
-    logger: &mut Logger,
-    ctx: &AlbumContext,
-) -> Result<(), String> {
+fn process_album_target(exec_dir: &Path, logger: &mut Logger, ctx: &AlbumContext) -> Result<(), String> {
     let album_dir = &ctx.album_dir;
     logger.verbose(&format!("album: {}", rel(exec_dir, album_dir)), false)?;
     if let Some(rar_path) = ctx.rar_path.as_deref() {
         if !album_dir.exists() {
             fs::create_dir_all(album_dir).map_err(ioe)?;
             extract_rar(rar_path, album_dir).map_err(|e| e.to_string())?;
-            logger.verbose(
-                &format!("extracted from {}", rel(exec_dir, rar_path)),
-                true,
-            )?;
+            logger.verbose(&format!("extracted from {}", rel(exec_dir, rar_path)), true)?;
         } else {
             logger.verbose("album directory already exists, skipping extract", true)?;
         }
@@ -150,11 +139,7 @@ fn process_album_target(
         )?;
         return Ok(());
     }
-    process_album(
-        exec_dir,
-        logger,
-        ctx,
-    )
+    process_album(exec_dir, logger, ctx)
 }
 
 fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -169,11 +154,7 @@ fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-fn process_album(
-    exec_dir: &Path,
-    logger: &mut Logger,
-    ctx: &AlbumContext,
-) -> Result<(), String> {
+fn process_album(exec_dir: &Path, logger: &mut Logger, ctx: &AlbumContext) -> Result<(), String> {
     let album_dir = &ctx.album_dir;
     let (flacs, cues) = scan_album_files(album_dir);
     if cues.is_empty() {
@@ -186,16 +167,19 @@ fn process_album(
     let pairing = pair_flac_cue(&flacs, &cues);
     let pairs = pairing.pairs;
     for info in pairing.ambiguous {
-        logger.append_audit("ambiguous_pairing", &format!(
-            "{} | flac={} | cues={}",
-            rel(exec_dir, album_dir),
-            rel(exec_dir, &info.flac),
-            info.cues
-                .iter()
-                .map(|c| rel(exec_dir, c))
-                .collect::<Vec<_>>()
-                .join(" , ")
-        ))?;
+        logger.append_audit(
+            "ambiguous_pairing",
+            &format!(
+                "{} | flac={} | cues={}",
+                rel(exec_dir, album_dir),
+                rel(exec_dir, &info.flac),
+                info.cues
+                    .iter()
+                    .map(|c| rel(exec_dir, c))
+                    .collect::<Vec<_>>()
+                    .join(" , ")
+            ),
+        )?;
     }
     for f in &flacs {
         if !pairs.iter().any(|(pf, _)| pf == f) {

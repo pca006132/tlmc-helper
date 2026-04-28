@@ -19,7 +19,6 @@ jobs:
         include:
           - name: Windows x86_64
             os: windows-2025
-            bin_path: target/release/tlmc.exe
           - name: MacOS am latest
             os: macos-latest
           - name: MacOS 15 intel
@@ -41,9 +40,14 @@ jobs:
         shell: pwsh
         run: Get-ChildItem target/release | Format-Table -AutoSize
 
-      - name: Upload Windows executable
+      - name: Upload Windows binaries
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: tlmc-windows-x86_64
-          path: ${{ matrix.bin_path }}
+          path: |
+            target/release/split-album.exe
+            target/release/scan-albums.exe
+            target/release/analyze-albums.exe
+            target/release/apply-tags.exe
+            target/release/*.dll

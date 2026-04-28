@@ -23,7 +23,7 @@ tempfile = "3"
 
 [[bin]]
 name = "split-album"
-path = "src/main.rs"
+path = "src/bin/split-album.rs"
 
 [[bin]]
 name = "scan-albums"
