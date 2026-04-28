@@ -5,7 +5,6 @@ use std::str::FromStr;
 
 use audiotags::Tag;
 use id3::Timestamp;
-use rayon::prelude::*;
 use serde_json::{Map, Value};
 use tlmc::logger::Logger;
 
@@ -26,7 +25,7 @@ fn main() {
 fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     let text = fs::read_to_string(exec_dir.join("update-metadata.json")).map_err(|e| e.to_string())?;
     let updates: BTreeMap<String, Value> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let mut albums = std::collections::BTreeSet::new();
+    let mut logged_albums = std::collections::BTreeSet::new();
     let mut jobs = Vec::new();
     for (track_rel, patch) in &updates {
         let path = exec_dir.join(track_rel);
@@ -37,20 +36,20 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
             continue;
         };
         let mut parts = track_rel.split('/');
-        if let (Some(circle), Some(album)) = (parts.next(), parts.next()) {
-            albums.insert(format!("{circle}/{album}"));
+        let album_key = if let (Some(circle), Some(album)) = (parts.next(), parts.next()) {
+            Some(format!("{circle}/{album}"))
+        } else {
+            None
+        };
+        jobs.push((path, m.clone(), album_key));
+    }
+    for (path, patch, album_key) in jobs {
+        if let Some(album) = album_key
+            && logged_albums.insert(album.clone())
+        {
+            logger.verbose(&format!("album: {album}"), false)?;
         }
-        jobs.push((path, m.clone()));
-    }
-    for album in albums {
-        logger.verbose(&format!("album: {album}"), false)?;
-    }
-    let results: Vec<Result<(), String>> = jobs
-        .into_par_iter()
-        .map(|(path, patch)| apply_patch(&path, &patch))
-        .collect();
-    for r in results {
-        r?;
+        apply_patch(&path, &patch)?;
     }
     Ok(())
 }

@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use audiotags::Tag;
-use rayon::prelude::*;
 use serde_json::{Map, Value};
 use tlmc::logger::{Logger, rel};
 use walkdir::WalkDir;
@@ -25,17 +24,9 @@ fn main() {
 fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     let circles = collect_circles(exec_dir)?;
     let albums = collect_album_dirs(exec_dir, &circles)?;
-    for album in &albums {
-        logger.verbose(&format!("album: {}", rel(exec_dir, album)), false)?;
-    }
-
-    let results: Vec<ScanResult> = albums
-        .into_par_iter()
-        .map(|album| scan_album(exec_dir, &album))
-        .collect();
-
     let mut metadata = Map::new();
-    for result in results {
+    for album in albums {
+        let result = scan_album(exec_dir, logger, &album)?;
         for (path, value) in result.metadata {
             metadata.insert(path, value);
         }
@@ -94,11 +85,12 @@ fn collect_album_dirs(exec_dir: &Path, circles: &[String]) -> Result<Vec<PathBuf
     Ok(albums.into_iter().collect())
 }
 
-fn scan_album(exec_dir: &Path, album: &Path) -> ScanResult {
+fn scan_album(exec_dir: &Path, logger: &mut Logger, album: &Path) -> Result<ScanResult, String> {
     let mut out = ScanResult::default();
     if !album.exists() {
-        return out;
+        return Ok(out);
     }
+    logger.verbose(&format!("album: {}", rel(exec_dir, album)), false)?;
     for entry in WalkDir::new(album).into_iter().flatten() {
         if !entry.file_type().is_file() {
             continue;
@@ -117,7 +109,7 @@ fn scan_album(exec_dir: &Path, album: &Path) -> ScanResult {
             Err(_) => out.corrupted.push(rel(exec_dir, path)),
         }
     }
-    out
+    Ok(out)
 }
 
 fn scan_track(path: &Path) -> Result<Value, String> {

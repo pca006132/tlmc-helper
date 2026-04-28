@@ -9,7 +9,6 @@ use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use encoding_rs::UTF_8;
 use flac_codec::decode::{FlacSampleReader, Metadata};
 use flac_codec::encode::{FlacSampleWriter, Options};
-use rayon::prelude::*;
 use tlmc::logger::{Logger, ioe, rel};
 use unrar::Archive;
 use walkdir::WalkDir;
@@ -118,7 +117,6 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
 
 fn process_album_target(exec_dir: &Path, logger: &mut Logger, ctx: &AlbumContext) -> Result<(), String> {
     let album_dir = &ctx.album_dir;
-    logger.verbose(&format!("album: {}", rel(exec_dir, album_dir)), false)?;
     if let Some(rar_path) = ctx.rar_path.as_deref() {
         if !album_dir.exists() {
             fs::create_dir_all(album_dir).map_err(ioe)?;
@@ -157,6 +155,7 @@ fn extract_rar(rar_path: &Path, out_dir: &Path) -> Result<(), Box<dyn std::error
 
 fn process_album(exec_dir: &Path, logger: &mut Logger, ctx: &AlbumContext) -> Result<(), String> {
     let album_dir = &ctx.album_dir;
+    logger.verbose(&format!("album: {}", rel(exec_dir, album_dir)), false)?;
     let (flacs, cues) = scan_album_files(album_dir);
     if cues.is_empty() {
         logger.verbose(
@@ -352,14 +351,12 @@ fn split_and_tag(
     }
 
     let cue = Arc::new(cue.clone());
-    let results: Vec<TrackResult> = jobs
-        .into_par_iter()
-        .map(|job| {
-            let source_data = Arc::clone(&source_data);
-            let cue = Arc::clone(&cue);
-            process_track_job(source_data, cue, job)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut results = Vec::new();
+    for job in jobs {
+        let source_data = Arc::clone(&source_data);
+        let cue = Arc::clone(&cue);
+        results.push(process_track_job(source_data, cue, job)?);
+    }
 
     for result in results {
         logger.verbose(&format!("wrote {}", rel(exec_dir, &result.out_path)), true)?;
