@@ -13,6 +13,7 @@ The tool assumes TLMC-style directory layout. This is not auto-detected.
 - Run binaries in a root directory containing circle folders.
 - Circle folder names may be:
   - `[CircleName]`
+  - `[CircleName] Extra Text` (only `CircleName` is extracted as circle name)
   - `CircleName`
 - Circle folders may contain:
   - album archives (`.rar`)
@@ -300,7 +301,10 @@ Current audit categories:
 ## Directory Expectations
 
 - Executable runs in a root directory containing circle folders.
-- Circle folder names may be bracketed (`[Circle]`) or plain (`Circle`).
+- Circle folder names may be:
+  - bracketed (`[Circle]`)
+  - bracketed with suffix (`[Circle] Extra Text`) and only `Circle` is extracted
+  - plain (`Circle`)
 - Circle folders may contain:
   - album `.rar` files (`YYYY.MM.DD [CAT] Album [Event].rar`)
   - already-extracted album directories

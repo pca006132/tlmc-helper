@@ -689,12 +689,31 @@ fn parse_track_path(track: &str) -> Result<(String, String), String> {
     // Prefer full album folder name detected by album naming pattern.
     for i in 1..parts.len() {
         if is_album_dir_name(parts[i]) {
-            return Ok((parts[i - 1].to_string(), parts[i].to_string()));
+            return Ok((extract_circle_name(parts[i - 1])?, parts[i].to_string()));
         }
     }
 
     // Fallback: original behavior
-    Ok((parts[0].to_string(), parts[1].to_string()))
+    Ok((extract_circle_name(parts[0])?, parts[1].to_string()))
+}
+
+fn extract_circle_name(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("invalid empty circle name in track path".to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        let Some(end) = rest.find(']') else {
+            return Err(format!("invalid bracketed circle name: {raw}"));
+        };
+        let core = rest[..end].trim();
+        if core.is_empty() {
+            return Err(format!("invalid bracketed circle name: {raw}"));
+        }
+        Ok(core.to_string())
+    } else {
+        Ok(trimmed.to_string())
+    }
 }
 
 fn is_album_dir_name(name: &str) -> bool {

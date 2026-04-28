@@ -43,15 +43,16 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
         if !circle_path.is_dir() {
             continue;
         }
-        let circle_name = circle_path
+        let circle_dir_name = circle_path
             .file_name()
             .and_then(OsStr::to_str)
             .unwrap_or("")
             .to_string();
-        if circle_name.starts_with('.') {
+        if circle_dir_name.starts_with('.') {
             continue;
         }
-        let circle_valid = is_valid_circle_name(&circle_name);
+        let circle_name = extract_circle_name(&circle_dir_name).unwrap_or_default();
+        let circle_valid = !circle_name.is_empty();
         if !circle_valid {
             logger.append_audit("invalid_names", &rel(exec_dir, &circle_path))?;
         }
@@ -68,7 +69,7 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
             let entry = match entry {
                 Ok(v) => v,
                 Err(err) => {
-                    logger.error(&format!("album entry error in {circle_name}: {err}"))?;
+                    logger.error(&format!("album entry error in {circle_dir_name}: {err}"))?;
                     continue;
                 }
             };
@@ -700,8 +701,22 @@ fn parse_album_date(name: &str) -> Option<String> {
     }
 }
 
-fn is_valid_circle_name(name: &str) -> bool {
-    !name.trim().is_empty()
+fn extract_circle_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let core = rest[..end].trim();
+        if core.is_empty() {
+            None
+        } else {
+            Some(core.to_string())
+        }
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn is_valid_album_name(name: &str) -> bool {

@@ -6,7 +6,11 @@
 
 This tool expects TLMC-style directories. It does not try to auto-infer arbitrary layouts.
 
-- Run in a root directory that contains circle folders (`[Circle]` or `Circle`)
+- Run in a root directory that contains circle folders:
+  - `[Circle]`
+  - `[Circle] Extra Text`
+  - `Circle`
+  - for `[XXX] YYY`, only `XXX` is extracted as the circle name
 - Each circle folder may contain:
   - album `.rar` files
   - extracted album directories
@@ -22,6 +26,10 @@ MusicLibraryRoot/
 │   └── 2024.05.03 [RDS-0002] Another Album [M3]/
 │       ├── disc.flac
 │       └── disc.cue
+├── [ALiCE'S EMOTiON] Team A/
+│   └── 2025.08.16 [AECD-0001] Sample Album/
+│       ├── album.flac
+│       └── album.cue
 └── Shining Symphony/
     └── 2023.12.30 [SS-1234] Winter Works/
         ├── CD1.flac

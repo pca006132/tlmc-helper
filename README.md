@@ -6,7 +6,8 @@ English: [README_EN.md](README_EN.md)
 
 本工具**不做智能猜目录**，默认你已经按 TLMC 风格整理好目录。
 
-- 在一个根目录下放多个社團文件夹（可用 `[社團名]` 或 `社團名`）
+- 在一个根目录下放多个社團文件夹（支持 `[社團名]`、`[社團名] 其他文字`、`社團名`）
+  - 若是 `[XXX] YYY` 格式，程序只提取 `XXX` 作为社團名
 - 每个社團目录下可以有：
   - 专辑 `.rar`
   - 已解压的专辑文件夹
@@ -22,6 +23,10 @@ English: [README_EN.md](README_EN.md)
 │   └── 2024.05.03 [RDS-0002] Another Album [M3]/
 │       ├── disc.flac
 │       └── disc.cue
+├── [TUMENECO] 冷猫/
+│   └── 2025.08.16 [AECD-0001] Sample Album/
+│       ├── album.flac
+│       └── album.cue
 └── 彩音 ～xi-on～/
     └── 2023.12.30 [XIOS-1234] Winter Works/
         ├── CD1.flac
