@@ -18,14 +18,14 @@ jobs:
       matrix:
         include:
           - name: Windows x86_64
-            os: windows-2022
+            os: windows-2025
             bin_path: target/release/tlmc.exe
-          - name: MacOS 14
-            os: macos-14
-          - name: MacOS 13 x86_64
-            os: macos-13
+          - name: MacOS am latest
+            os: macos-latest
+          - name: MacOS 15 intel
+            os: macos-15-intel
           - name: Linux x86_64
-            os: ubuntu-22.04
+            os: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@v4
