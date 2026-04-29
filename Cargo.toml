@@ -17,6 +17,7 @@ walkdir = "2"
 
 [patch.crates-io]
 unrar = { git = "https://github.com/pca006132/unrar.rs" }
+audiotags = { git = "https://github.com/pca006132/audiotags" }
 
 [dev-dependencies]
 tempfile = "3"

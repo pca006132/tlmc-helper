@@ -88,6 +88,20 @@ cargo run --bin apply-tags
   - `all artists` / `all album artists` as `{name: count}`
   - rewriting rules
   - `all genres` / `default genre`
+  - special top-level `$all` (same shape): aggregated across all circles; rules are not auto-generated there and are preserved as user-maintained rules
+
+### `structured.json` shape at a glance
+
+Edit `structured.json` and `rewriting.json` together: the former controls structure/track fields, the latter controls name/genre normalization.
+
+`structured.json` hierarchy:
+
+- top level: `circle -> albums`
+- `albums`: `album_name -> { "album artists", "discs" }`
+- `discs`: array; each disc entry is a dictionary:
+  - optional `"$subtitle"`: disc subtitle
+  - other keys are `track_path` entries mapping to track objects
+- track object fields: `title`, `date`, `track number`, `artists`, `genre`
 
 ## Core rewriting workflow
 
@@ -152,13 +166,15 @@ When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules 
 ## Other important behavior
 
 - `scan-albums` treats `;` as a multi-artist separator.
-- `apply-tags` joins multi-artist values with `;`.
+- `scan-albums` and `apply-tags` support true multi-valued tags for `Artists` / `Album artists`:
+  - scanning parses multi-values into arrays;
+  - writing applies them back as multi-valued tags (not a single joined string).
 - Disc numbering is inferred from `structured.json` disc order (first disc map = Disc 1, etc.).
 - `analyze-albums` now runs as a single flow:
   - if `structured.json` is missing, it is built first;
   - if `rewriting.json` is missing, rewriting rules are auto-generated first;
   - if `rewriting.json` exists, rules and `default genre` are preserved, then `all artists` / `all album artists` / `all genres` are refreshed.
-- Name preprocessing tokenizes by `;` and `\\u0000` first; those separators are not kept inside rewriting rules nor inside `all artists` / `all album artists` names.
+- Rewriting priority is: circle-specific rules first, then `$all` rules (lowest priority).
 
 ## Recommended checks after each run
 

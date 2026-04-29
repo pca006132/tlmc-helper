@@ -86,6 +86,20 @@ cargo run --bin apply-tags
   - `all artists` / `all album artists`（字典：名字 -> 计数）
   - `artists rewriting` / `album artists rewriting` / `genre rewriting`
   - `all genres` / `default genre`
+  - 特殊顶层 `$all`（同结构）：跨全部社團聚合计数；规则不会自动生成，只保留人工维护内容
+
+### `structured.json` 结构速览
+
+建议把 `structured.json` 和 `rewriting.json` 配合编辑：前者改结构/曲目字段，后者做名字与流派归一化。
+
+`structured.json` 的层级是：
+
+- 顶层：`社團 -> albums`
+- `albums`：`专辑名 -> { "album artists", "discs" }`
+- `discs`：数组，每个元素是一个字典：
+  - 可选 `"$subtitle"`：该盘副标题
+  - 其余键是 `track_path`，值为曲目对象
+- 曲目对象字段：`title`、`date`、`track number`、`artists`、`genre`
 
 ## 重写工作流（非常重要）
 
@@ -150,13 +164,15 @@ cargo run --bin apply-tags
 ## 其他关键行为
 
 - `scan-albums` 读取多艺术家时把 `;` 当分隔符。
-- `apply-tags` 写回多艺术家时也用 `;` 拼接。
+- `scan-albums` / `apply-tags` 支持 artists / album artists 的多值标签：
+  - 扫描时会把多值解析为数组；
+  - 写回时会以多值标签形式写入（不是单字符串拼接）。
 - 盘号由 `structured.json` 的 `discs` 顺序自动推断（第 1 组是 Disc 1，以此类推）。
 - `analyze-albums` 只有一个流程：
   - 若缺少 `structured.json`，先自动构建；
   - 若缺少 `rewriting.json`，先自动生成规则；
   - 若 `rewriting.json` 已存在，则保留其规则和 `default genre`，并刷新 `all artists` / `all album artists` / `all genres`。
-- 名字预处理会先按 `;` 和 `\\u0000` 分割；这些分隔符不会保留在规则项或 `all artists` / `all album artists` 名字中。
+- 重写优先级：先执行社團内规则，再执行 `$all` 规则（`$all` 优先级最低）。
 
 ## 审计建议
 

@@ -110,6 +110,7 @@ If fallback requires invalid directory naming, skip album and log to `error.log`
     "Date": "VALUE",
     "Year": "VALUE",
     "Album artists": ["VALUE"],
+    "Disc subtitle": "VALUE",
     "Album title": "VALUE",
     "Track number": 1,
     "Total tracks": 10,
@@ -123,6 +124,7 @@ If fallback requires invalid directory naming, skip album and log to `error.log`
 
 All fields optional per track.  
 `Artists` / `Album artists` parse `;` as separator.
+`scan-albums` is responsible for this tokenization; downstream binaries use the parsed list values as-is.
 
 ## `analyze-albums`
 
@@ -139,6 +141,9 @@ All fields optional per track.
 - albums/discs/tracks
 - album artists per album
 - track fields (`title`, `date`, `track number`, `artists`, `genre`)
+- each disc entry is a dictionary with:
+  - `$subtitle` (optional): disc subtitle string for that disc
+  - track-path keys mapping to track objects
 
 No rewriting/default-genre/all-* aggregation data in `structured.json`.
 
@@ -152,6 +157,7 @@ No rewriting/default-genre/all-* aggregation data in `structured.json`.
 - `all genres`: list
 - `genre rewriting`
 - `default genre` (optional)
+- plus a special top-level `$all` entry with the same shape, aggregated across all circles
 
 Count rules:
 - case-sensitive substring match
@@ -190,7 +196,7 @@ Auto-generation rules:
   - generated rules are saturated so one-pass rewriting reaches stable outputs (max 5 iterations)
   - remove auto-generated rules whose `from` side cannot match any reachable source name
 - Separator behavior:
-  - before split-operator handling, tokenize artist/album-artist fields using `;` and NUL (`\u0000`)
+  - tokenization is not performed in `analyze-albums`; it consumes already-tokenized artist/album-artist arrays from `metadata.json`
   - normal split candidates are applied outside parentheses only
   - separators include: `feat.`, `Feat.`, ` + `, ` ＋ `, ` x `, ` & `, ` ＆ `, ` / `, ` ／ `, ` vs. `, ` vs `, `×`, `，`, `、`, `；`, `,`
   - symbolic separators with surrounding spaces are treated as safer defaults
@@ -207,9 +213,15 @@ Steps:
      - disc classification fallback -> `audit.json.disc_classification`
      - missing artists -> `audit.json.missing_info`
      - album artist inconsistency/mismatch -> `audit.json.different_album_artist`
+   - disc subtitle behavior:
+     - single-disc albums usually omit `$subtitle`
+     - if a disc already has an explicit `Disc subtitle` and it is unique within the disc, use it as `$subtitle`
+     - otherwise, for multi-disc albums, if any track in a disc has `Album title`, choose the track with smallest `Track number` (tie-break by lexicographically smallest track path) and use that `Album title` as `$subtitle`
 2. If `rewriting.json` is missing, auto-generate rewriting rules from `structured.json`.
 3. If `rewriting.json` exists, preserve rewriting rules + default genre.
 4. Refresh `all artists` / `all album artists` / `all genres` from `structured.json` after applying current rewriting rules. Use rewritten artist/album-artist fields for per-track counting.
+   - `$all` counts across all circles
+   - `$all` rewriting rules are never auto-generated; only preserved from existing file (or empty)
 5. Validate rewrite chains from `rewriting.json`; emit deduped `rewrite_chain_warning`.
 6. Apply rewriting/default genre to `metadata.json` snapshot.
 7. Rebuild + overlay track edits from existing `structured.json`.
@@ -225,6 +237,7 @@ Single-disc suppression:
 - First match applies; outputs do not continue rewriting.
 - Results deduplicated.
 - Name tokenization/splitting should be handled explicitly in generation/application flow, not implicitly inside generic rewrite matching logic.
+- Rule priority is: circle-specific rules first, then `$all` rules.
 
 ## `apply-tags`
 
@@ -234,6 +247,7 @@ Single-disc suppression:
 - Update fields:
   - `Title`
   - `Artists` (`;` joined)
+  - `Disc subtitle`
   - `Album title`
   - `Album artists` (`;` joined)
   - `Track number`

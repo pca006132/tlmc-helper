@@ -60,14 +60,19 @@ fn apply_patch(path: &Path, patch: &Map<String, Value>) -> Result<(), String> {
         tag.set_title(&v);
     }
     if let Some(v) = get_list(patch, "Artists") {
-        tag.set_artist(&v.join(";"));
+        let v: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
+        tag.set_artists(&v);
     }
     if let Some(v) = get_s(patch, "Album title") {
         tag.set_album_title(&v);
     }
     if let Some(v) = get_list(patch, "Album artists")
     {
-        tag.set_album_artist(&v.join(";"));
+        let v: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
+        tag.set_album_artists(&v);
+    }
+    if let Some(v) = get_s(patch, "Disc subtitle") {
+        tag.set_disc_subtitle(&v);
     }
     if let Some(v) = get_u16(patch, "Track number") {
         tag.set_track_number(v);

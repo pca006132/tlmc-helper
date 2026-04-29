@@ -116,10 +116,13 @@ fn scan_track(path: &Path) -> Result<Value, String> {
     let tag = Tag::new().read_from_path(path).map_err(|e| e.to_string())?;
     let mut m = Map::new();
     insert_str(&mut m, "Title", tag.title());
-    insert_str_list(&mut m, "Artists", tag.artist().map(split_names));
+
+    insert_str_list(&mut m, "Artists", tag.artists().map(split_names));
+    insert_str_list(&mut m, "Album artists", tag.album_artists().map(split_names));
+    insert_str(&mut m, "Disc subtitle", tag.disc_subtitle());
+
     insert_str(&mut m, "Date", tag.date().map(|v| v.to_string()));
     insert_str(&mut m, "Year", tag.year().map(|y| y.to_string()));
-    insert_str_list(&mut m, "Album artists", tag.album_artist().map(split_names));
     insert_str(&mut m, "Album title", tag.album_title());
     insert_num(&mut m, "Track number", tag.track_number().map(u64::from));
     insert_num(&mut m, "Total tracks", tag.total_tracks().map(u64::from));
@@ -130,13 +133,16 @@ fn scan_track(path: &Path) -> Result<Value, String> {
     Ok(Value::Object(m))
 }
 
-fn split_names(v: impl Into<String>) -> Vec<String> {
-    v.into()
-        .split(';')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(ToString::to_string)
-        .collect()
+fn split_names(v: Vec<String>) -> Vec<String> {
+    if v.len() == 1 {
+        v[0].split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .collect()
+    } else {
+        v
+    }
 }
 
 fn insert_str(m: &mut Map<String, Value>, key: &str, value: Option<impl Into<String>>) {
