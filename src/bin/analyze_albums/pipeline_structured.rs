@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -26,8 +27,10 @@ pub(super) fn run_structured_stage(
 pub(super) fn read_metadata(
     path: impl AsRef<Path>,
 ) -> Result<BTreeMap<String, Map<String, Value>>, String> {
-    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let raw: BTreeMap<String, Value> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let raw: BTreeMap<String, Value> =
+        serde_json::from_reader(reader).map_err(|e| e.to_string())?;
     let mut out = BTreeMap::new();
     for (k, v) in raw {
         if let Value::Object(m) = v {
@@ -52,7 +55,9 @@ pub(super) fn build_structured_from_metadata(
             non_empty(get_s(&fields, "Date")).or_else(|| non_empty(get_s(&fields, "Year")));
         let date = resolve_track_date(
             &track_path,
-            metadata_date_text.as_deref().and_then(parse_timestamp_value),
+            metadata_date_text
+                .as_deref()
+                .and_then(parse_timestamp_value),
             inferred_date,
             metadata_date_text.as_deref(),
             &mut inconsistent_date,
@@ -120,7 +125,8 @@ pub(super) fn build_structured_from_metadata(
                     if t.artists.is_empty() {
                         missing_info.insert(album_path.clone());
                     }
-                    let aa_pre = super::rule_generation::aggregate_names_for_track(&t.album_artists);
+                    let aa_pre =
+                        super::rule_generation::aggregate_names_for_track(&t.album_artists);
                     let a_pre = super::rule_generation::aggregate_names_for_track(&t.artists);
                     let aa = aa_pre.names;
                     let a = a_pre.names;
@@ -185,8 +191,8 @@ pub(super) fn parse_track_path(track: &str) -> Result<(String, String, Option<Ti
     }
     let circle = extract_circle_name(parts[0])?;
     let album_folder = parts[1].to_string();
-    let (inferred_date, album_name) = parse_album_folder_components(&album_folder)
-        .unwrap_or((None, album_folder.clone()));
+    let (inferred_date, album_name) =
+        parse_album_folder_components(&album_folder).unwrap_or((None, album_folder.clone()));
     Ok((circle, album_name, inferred_date))
 }
 
@@ -213,8 +219,9 @@ fn load_or_build_structured(
     logger: &mut Logger,
 ) -> Result<BTreeMap<String, CircleStructured>, String> {
     if structured_path.exists() {
-        return serde_json::from_str(&fs::read_to_string(structured_path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string());
+        let file = fs::File::open(structured_path).map_err(|e| e.to_string())?;
+        let reader = BufReader::new(file);
+        return serde_json::from_reader(reader).map_err(|e| e.to_string());
     }
 
     let (structured, audits) = build_structured_from_metadata(metadata.clone())?;
@@ -230,8 +237,9 @@ fn load_or_build_structured(
     for p in audits.inconsistent_date {
         logger.append_audit("inconsistent_date", &p)?;
     }
-    let json = serde_json::to_string_pretty(&structured).map_err(|e| e.to_string())?;
-    fs::write(exec_dir.join("structured.json"), json).map_err(|e| e.to_string())?;
+    let file = fs::File::create(exec_dir.join("structured.json")).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &structured).map_err(|e| e.to_string())?;
     Ok(structured)
 }
 
@@ -330,7 +338,9 @@ fn extract_circle_name(raw: &str) -> Result<String, String> {
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {
-    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+    value
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 fn parse_album_folder_components(folder: &str) -> Option<(Option<Timestamp>, String)> {
@@ -371,12 +381,11 @@ fn resolve_track_date(
                 let metadata_text = metadata_date_text
                     .map(ToString::to_string)
                     .unwrap_or_else(|| timestamp_to_date_string(&metadata));
-                inconsistent_date_audit
-                    .insert(format!(
-                        "{track_path}: metadata={}, inferred={}",
-                        metadata_text,
-                        timestamp_to_date_string(&inferred)
-                    ));
+                inconsistent_date_audit.insert(format!(
+                    "{track_path}: metadata={}, inferred={}",
+                    metadata_text,
+                    timestamp_to_date_string(&inferred)
+                ));
                 return Some(metadata);
             }
             if timestamp_precision_level(&metadata_ts) < timestamp_precision_level(&inferred) {

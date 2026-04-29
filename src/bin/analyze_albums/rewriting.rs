@@ -114,40 +114,53 @@ pub(super) fn build_rewriting_from_structured(
                 )
             };
 
-        let count_artist_rules = final_artist_rules.clone();
-        let count_album_artist_rules = final_album_artist_rules.clone();
-        let mut count_track_fields: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+        let mut rewritten_artist_name_counts: BTreeMap<String, u64> = BTreeMap::new();
+        let mut rewritten_album_artist_name_counts: BTreeMap<String, u64> = BTreeMap::new();
+        let mut combined_name_counts: BTreeMap<String, u64> = BTreeMap::new();
         for album in circle_data.albums.values() {
             let album_aa = super::pipeline_rewriting::rewrite_names(
                 album.album_artists.clone(),
-                &count_album_artist_rules,
+                &final_album_artist_rules,
             );
             for disc in &album.discs {
                 for track in disc.tracks.values() {
                     let track_a = super::pipeline_rewriting::rewrite_names(
                         track.artists.clone(),
-                        &count_artist_rules,
+                        &final_artist_rules,
                     );
-                    count_track_fields.push((track_a, album_aa.clone()));
+                    for name in &track_a {
+                        *rewritten_artist_name_counts
+                            .entry(name.clone())
+                            .or_insert(0) += 1;
+                        *combined_name_counts.entry(name.clone()).or_insert(0) += 1;
+                    }
+                    for name in &album_aa {
+                        *rewritten_album_artist_name_counts
+                            .entry(name.clone())
+                            .or_insert(0) += 1;
+                        *combined_name_counts.entry(name.clone()).or_insert(0) += 1;
+                    }
                 }
             }
         }
-        let (rewritten_artist_names, rewritten_album_artist_names) =
-            super::rule_generation::dedup_names_from_circle(
-                circle_data,
-                &count_artist_rules,
-                &count_album_artist_rules,
-            );
+        let rewritten_artist_names = rewritten_artist_name_counts
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let rewritten_album_artist_names = rewritten_album_artist_name_counts
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
 
         let rewriting = CircleRewriting {
             all_album_artists: super::pipeline_rewriting::count_substring_hits(
                 &rewritten_album_artist_names,
-                &count_track_fields,
+                &combined_name_counts,
             ),
             album_artists_rewriting: final_album_artist_rules,
             all_artists: super::pipeline_rewriting::count_substring_hits(
                 &rewritten_artist_names,
-                &count_track_fields,
+                &combined_name_counts,
             ),
             artists_rewriting: final_artist_rules,
             all_genres,
@@ -179,9 +192,9 @@ fn build_global_rewriting_entry(
     let global_default_genre = existing_all.and_then(|v| v.default_genre.clone());
 
     let mut all_genres = Vec::new();
-    let mut track_fields: Vec<(Vec<String>, Vec<String>)> = Vec::new();
-    let mut rewritten_artist_values = Vec::new();
-    let mut rewritten_album_artist_values = Vec::new();
+    let mut combined_name_counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut rewritten_artist_name_counts: BTreeMap<String, u64> = BTreeMap::new();
+    let mut rewritten_album_artist_name_counts: BTreeMap<String, u64> = BTreeMap::new();
 
     for (circle_name, circle_data) in structured {
         let Some(circle_rules) = per_circle.get(circle_name) else {
@@ -205,22 +218,32 @@ fn build_global_rewriting_entry(
                 album.album_artists.clone(),
                 &album_artist_rules,
             );
-            rewritten_album_artist_values.extend(album_aa.iter().cloned());
             for disc in &album.discs {
                 for track in disc.tracks.values() {
                     let track_a = super::pipeline_rewriting::rewrite_names(
                         track.artists.clone(),
                         &artist_rules,
                     );
-                    rewritten_artist_values.extend(track_a.iter().cloned());
-                    track_fields.push((track_a, album_aa.clone()));
+                    for name in &track_a {
+                        *rewritten_artist_name_counts
+                            .entry(name.clone())
+                            .or_insert(0) += 1;
+                        *combined_name_counts.entry(name.clone()).or_insert(0) += 1;
+                    }
+                    for name in &album_aa {
+                        *rewritten_album_artist_name_counts
+                            .entry(name.clone())
+                            .or_insert(0) += 1;
+                        *combined_name_counts.entry(name.clone()).or_insert(0) += 1;
+                    }
                     let genre = super::pipeline_rewriting::rewrite_genre(
                         track.genre.clone(),
                         &genre_rules,
                         circle_rules
                             .default_genre
-                            .clone()
-                            .or_else(|| global_default_genre.clone()),
+                            .as_ref()
+                            .cloned()
+                            .or_else(|| global_default_genre.as_ref().cloned()),
                     );
                     if let Some(g) = genre
                         && !g.trim().is_empty()
@@ -232,15 +255,24 @@ fn build_global_rewriting_entry(
         }
     }
 
-    let all_artists = dedup_sorted(rewritten_artist_values);
-    let all_album_artists = dedup_sorted(rewritten_album_artist_values);
+    let all_artists = rewritten_artist_name_counts
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let all_album_artists = rewritten_album_artist_name_counts
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
     CircleRewriting {
         all_album_artists: super::pipeline_rewriting::count_substring_hits(
             &all_album_artists,
-            &track_fields,
+            &combined_name_counts,
         ),
         album_artists_rewriting: global_album_artist_rules,
-        all_artists: super::pipeline_rewriting::count_substring_hits(&all_artists, &track_fields),
+        all_artists: super::pipeline_rewriting::count_substring_hits(
+            &all_artists,
+            &combined_name_counts,
+        ),
         artists_rewriting: global_artist_rules,
         all_genres: dedup_sorted(all_genres),
         genre_rewriting: global_genre_rules,

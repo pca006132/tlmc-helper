@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::BufWriter;
 use std::path::Path;
 use std::{collections::HashSet, env};
 
@@ -49,15 +50,15 @@ fn run_analyze_albums(
         pipeline_update::run_update_stage(&metadata, &structured_data, &rewriting_data)?;
     if !selected_circles.is_empty() {
         let selected: HashSet<&str> = selected_circles.iter().map(String::as_str).collect();
-        updates.retain(|track_path, _| {
-            match pipeline_structured::parse_track_path(track_path) {
+        updates.retain(
+            |track_path, _| match pipeline_structured::parse_track_path(track_path) {
                 Ok((circle, _, _)) => selected.contains(circle.as_str()),
                 Err(_) => false,
-            }
-        });
+            },
+        );
     }
-    let update_json =
-        serde_json::to_string_pretty(&Value::Object(updates)).map_err(|e| e.to_string())?;
-    fs::write(exec_dir.join("update-metadata.json"), update_json).map_err(|e| e.to_string())
+    let file =
+        fs::File::create(exec_dir.join("update-metadata.json")).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &Value::Object(updates)).map_err(|e| e.to_string())
 }
-

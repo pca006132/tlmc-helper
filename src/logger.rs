@@ -1,7 +1,7 @@
+use serde_json::{Map, Value};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use serde_json::{Map, Value};
 
 pub struct Logger {
     exec_dir: PathBuf,

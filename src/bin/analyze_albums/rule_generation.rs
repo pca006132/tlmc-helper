@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::OnceLock;
 
-use super::models::{CircleStructured, NameAggregation, RewriteRule, ScoredRewriteRule};
+use super::models::{NameAggregation, RewriteRule, ScoredRewriteRule};
 use super::name_utils::{dedup_preserve, dedup_sorted, normalize_name};
 use regex::Regex;
 
@@ -90,30 +90,6 @@ pub(super) fn known_circle_names(artists: &[String], album_artists: &[String]) -
         .collect()
 }
 
-pub(super) fn dedup_names_from_circle(
-    circle_data: &CircleStructured,
-    artist_rules: &[RewriteRule],
-    album_artist_rules: &[RewriteRule],
-) -> (Vec<String>, Vec<String>) {
-    let mut artist_names = Vec::new();
-    let mut album_artist_names = Vec::new();
-    for album in circle_data.albums.values() {
-        let album_aa = super::pipeline_rewriting::rewrite_names(
-            album.album_artists.clone(),
-            album_artist_rules,
-        );
-        for disc in &album.discs {
-            for track in disc.tracks.values() {
-                let track_a =
-                    super::pipeline_rewriting::rewrite_names(track.artists.clone(), artist_rules);
-                artist_names.extend(track_a);
-                album_artist_names.extend(album_aa.iter().cloned());
-            }
-        }
-    }
-    (dedup_sorted(artist_names), dedup_sorted(album_artist_names))
-}
-
 pub(super) fn dedup_rewrite_rules(rules: Vec<RewriteRule>) -> Vec<RewriteRule> {
     let mut out = Vec::new();
     for mut r in rules {
@@ -181,8 +157,12 @@ fn stage1_generate_split_rules(
     known_names: &HashSet<String>,
 ) -> Vec<RewriteRule> {
     let aggressive_rules = build_aggressive_split_rules(raw_names, known_names);
-    let merged_split_rules =
-        dedup_rewrite_rules(normal_split_rules.into_iter().chain(aggressive_rules).collect());
+    let merged_split_rules = dedup_rewrite_rules(
+        normal_split_rules
+            .into_iter()
+            .chain(aggressive_rules)
+            .collect(),
+    );
     let scored_split_rules = score_split_rule_confidence(merged_split_rules, known_names);
     order_split_rules_by_confidence(scored_split_rules)
 }
@@ -296,10 +276,7 @@ fn order_split_rules_by_confidence(scored_rules: Vec<ScoredRewriteRule>) -> Vec<
     scored_rules.into_iter().map(|r| r.rule).collect()
 }
 
-fn build_aggressive_split_rules(
-    values: &[String],
-    known: &HashSet<String>,
-) -> Vec<RewriteRule> {
+fn build_aggressive_split_rules(values: &[String], known: &HashSet<String>) -> Vec<RewriteRule> {
     let mut out = Vec::new();
     let known_norm = known
         .iter()

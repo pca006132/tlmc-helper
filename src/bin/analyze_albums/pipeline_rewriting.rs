@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::{BufReader, BufWriter};
 use std::path::Path;
 
 use tlmc::logger::Logger;
@@ -18,9 +19,9 @@ pub(super) fn run_rewriting_stage(
         structured_data,
         rewriting_existing.as_ref(),
     );
-    let rewriting_json =
-        serde_json::to_string_pretty(&rewriting_data).map_err(|e| e.to_string())?;
-    fs::write(&rewriting_path, rewriting_json).map_err(|e| e.to_string())?;
+    let file = fs::File::create(&rewriting_path).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &rewriting_data).map_err(|e| e.to_string())?;
     validate_rewrite_chains(&rewriting_data, logger)?;
     Ok(rewriting_data)
 }
@@ -89,10 +90,12 @@ pub(super) fn apply_rewrites_to_structured_new(
             all_rewriting.map(|v| &v.album_artists_rewriting),
         );
         for album in circle.albums.values_mut() {
-            album.album_artists = rewrite_names(album.album_artists.clone(), &album_artist_rules);
+            let original_album_artists = std::mem::take(&mut album.album_artists);
+            album.album_artists = rewrite_names(original_album_artists, &album_artist_rules);
             for disc in &mut album.discs {
                 for track in disc.tracks.values_mut() {
-                    track.artists = rewrite_names(track.artists.clone(), &artist_rules);
+                    let original_artists = std::mem::take(&mut track.artists);
+                    track.artists = rewrite_names(original_artists, &artist_rules);
                 }
             }
         }
@@ -101,31 +104,29 @@ pub(super) fn apply_rewrites_to_structured_new(
 
 pub(super) fn count_substring_hits(
     names: &[String],
-    track_name_fields: &[(Vec<String>, Vec<String>)],
+    name_counts: &BTreeMap<String, u64>,
 ) -> BTreeMap<String, u64> {
     let mut out = BTreeMap::new();
     for name in names {
-        let mut count = 0_u64;
-        for (artists, album_artists) in track_name_fields {
-            let matched = artists
-                .iter()
-                .chain(album_artists.iter())
-                .any(|v| v.contains(name));
-            if matched {
-                count += 1;
-            }
-        }
+        let count = name_counts
+            .iter()
+            .filter(|(value, _)| value.contains(name))
+            .map(|(_, c)| *c)
+            .sum();
         out.insert(name.clone(), count);
     }
     out
 }
 
-fn read_rewriting_if_exists(path: &Path) -> Result<Option<BTreeMap<String, CircleRewriting>>, String> {
+fn read_rewriting_if_exists(
+    path: &Path,
+) -> Result<Option<BTreeMap<String, CircleRewriting>>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let parsed = serde_json::from_str(&fs::read_to_string(path).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
+    let parsed = serde_json::from_reader(reader).map_err(|e| e.to_string())?;
     Ok(Some(parsed))
 }
 

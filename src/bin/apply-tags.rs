@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::BufReader;
 use std::path::Path;
 use std::str::FromStr;
 
@@ -23,18 +24,14 @@ fn main() {
 }
 
 fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
-    let text =
-        fs::read_to_string(exec_dir.join("update-metadata.json")).map_err(|e| e.to_string())?;
+    let file = fs::File::open(exec_dir.join("update-metadata.json")).map_err(|e| e.to_string())?;
+    let reader = BufReader::new(file);
     let updates: BTreeMap<String, Value> =
-        serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        serde_json::from_reader(reader).map_err(|e| e.to_string())?;
     let mut logged_albums = std::collections::BTreeSet::new();
-    let mut jobs = Vec::new();
-    for (track_rel, patch) in &updates {
-        let path = exec_dir.join(track_rel);
-        if !path.exists() {
-            continue;
-        }
-        let Value::Object(m) = patch else {
+    for (track_rel, patch) in updates {
+        let path = exec_dir.join(&track_rel);
+        let Value::Object(patch_obj) = patch else {
             continue;
         };
         let mut parts = track_rel.split('/');
@@ -43,15 +40,16 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
         } else {
             None
         };
-        jobs.push((path, m.clone(), album_key));
-    }
-    for (path, patch, album_key) in jobs {
         if let Some(album) = album_key
             && logged_albums.insert(album.clone())
         {
             logger.verbose(&format!("album: {album}"), false)?;
         }
-        apply_patch(&path, &patch)?;
+        if let Err(err) = apply_patch(&path, &patch_obj) {
+            let line = format!("{}: {err}", path.to_string_lossy());
+            logger.append_audit("apply_tags_failed", &line)?;
+            continue;
+        }
     }
     Ok(())
 }

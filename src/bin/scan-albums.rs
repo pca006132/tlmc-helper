@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use audiotags::Tag;
@@ -34,8 +35,9 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
             logger.append_audit("corrupted_tracks", &bad)?;
         }
     }
-    let json = serde_json::to_string_pretty(&Value::Object(metadata)).map_err(|e| e.to_string())?;
-    fs::write(exec_dir.join("metadata.json"), json).map_err(|e| e.to_string())
+    let file = fs::File::create(exec_dir.join("metadata.json")).map_err(|e| e.to_string())?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer_pretty(writer, &Value::Object(metadata)).map_err(|e| e.to_string())
 }
 
 fn collect_circles(exec_dir: &Path) -> Result<Vec<String>, String> {
@@ -96,10 +98,13 @@ fn scan_album(exec_dir: &Path, logger: &mut Logger, album: &Path) -> Result<Scan
             continue;
         }
         let path = entry.path();
-        if !matches!(
-            path.extension().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()),
-            Some(ext) if ext == "flac" || ext == "mp3" || ext == "m4a"
-        ) {
+        let Some(ext) = path.extension().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if !(ext.eq_ignore_ascii_case("flac")
+            || ext.eq_ignore_ascii_case("mp3")
+            || ext.eq_ignore_ascii_case("m4a"))
+        {
             continue;
         }
         match scan_track(path) {
@@ -172,6 +177,6 @@ fn insert_str_list(m: &mut Map<String, Value>, key: &str, value: Option<Vec<Stri
 
 #[derive(Default)]
 struct ScanResult {
-    metadata: BTreeMap<String, Value>,
+    metadata: Map<String, Value>,
     corrupted: Vec<String>,
 }

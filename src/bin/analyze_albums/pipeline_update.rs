@@ -9,12 +9,14 @@ pub(super) fn run_update_stage(
     structured_data: &BTreeMap<String, CircleStructured>,
     rewriting_data: &BTreeMap<String, CircleRewriting>,
 ) -> Result<Map<String, Value>, String> {
-    let mut updated_metadata = metadata.clone();
+    let mut updated_metadata = BTreeMap::new();
     let all_rewriting = rewriting_data.get("$all");
 
     for (track_path, orig) in metadata {
+        let mut entry = orig.clone();
         let (circle, _, _) = super::pipeline_structured::parse_track_path(track_path)?;
         let Some(circle_cfg) = rewriting_data.get(&circle) else {
+            updated_metadata.insert(track_path.clone(), entry);
             continue;
         };
         let artist_rules = super::pipeline_rewriting::chain_rules_with_global(
@@ -29,50 +31,49 @@ pub(super) fn run_update_stage(
             &circle_cfg.genre_rewriting,
             all_rewriting.map(|v| &v.genre_rewriting),
         );
-        let artists =
-            super::pipeline_rewriting::rewrite_names(super::pipeline_structured::get_list(orig, "Artists"), &artist_rules);
+        let orig_artists = super::pipeline_structured::get_list(orig, "Artists");
+        let artists = super::pipeline_rewriting::rewrite_names(orig_artists.clone(), &artist_rules);
+        let orig_album_artists = super::pipeline_structured::get_list(orig, "Album artists");
         let album_artists = super::pipeline_rewriting::rewrite_names(
-            super::pipeline_structured::get_list(orig, "Album artists"),
+            orig_album_artists.clone(),
             &album_artist_rules,
         );
+        let orig_genre = super::pipeline_structured::get_s(orig, "Genre");
         let genre = super::pipeline_rewriting::rewrite_genre(
-            super::pipeline_structured::get_s(orig, "Genre"),
+            orig_genre.clone(),
             &genre_rules,
-            circle_cfg
-                .default_genre
-                .clone()
-                .or_else(|| all_rewriting.and_then(|v| v.default_genre.clone())),
+            circle_cfg.default_genre.as_ref().cloned().or_else(|| {
+                all_rewriting
+                    .and_then(|v| v.default_genre.as_ref())
+                    .cloned()
+            }),
         );
-        let mut patch = Map::new();
-        if artists != super::pipeline_structured::get_list(orig, "Artists") {
-            patch.insert(
+        if artists != orig_artists {
+            entry.insert(
                 "Artists".to_string(),
                 Value::Array(artists.into_iter().map(Value::String).collect()),
             );
         }
-        if album_artists != super::pipeline_structured::get_list(orig, "Album artists") {
-            patch.insert(
+        if album_artists != orig_album_artists {
+            entry.insert(
                 "Album artists".to_string(),
                 Value::Array(album_artists.into_iter().map(Value::String).collect()),
             );
         }
-        if genre != super::pipeline_structured::get_s(orig, "Genre")
+        if genre != orig_genre
             && let Some(g) = genre
         {
-            patch.insert("Genre".to_string(), Value::String(g));
+            entry.insert("Genre".to_string(), Value::String(g));
         }
-        if !patch.is_empty()
-            && let Some(entry) = updated_metadata.get_mut(track_path)
-        {
-            for (k, v) in &patch {
-                entry.insert(k.clone(), v.clone());
-            }
-        }
+        updated_metadata.insert(track_path.clone(), entry);
     }
     let (mut structured_new, _) =
         super::pipeline_structured::build_structured_from_metadata(updated_metadata)?;
     overlay_track_data_from_old(&mut structured_new, structured_data);
-    super::pipeline_rewriting::apply_rewrites_to_structured_new(&mut structured_new, rewriting_data);
+    super::pipeline_rewriting::apply_rewrites_to_structured_new(
+        &mut structured_new,
+        rewriting_data,
+    );
 
     let desired = materialize_metadata_from_structured(&structured_new);
     let mut updates = Map::new();
@@ -142,7 +143,10 @@ fn materialize_metadata_from_structured(
     out
 }
 
-fn diff_track_metadata(orig: &Map<String, Value>, desired: &Map<String, Value>) -> Map<String, Value> {
+fn diff_track_metadata(
+    orig: &Map<String, Value>,
+    desired: &Map<String, Value>,
+) -> Map<String, Value> {
     let mut patch = Map::new();
     for (k, desired_v) in desired {
         let changed = match (orig.get(k), desired_v) {
