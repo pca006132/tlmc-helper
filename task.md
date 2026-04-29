@@ -246,10 +246,10 @@ Single-disc suppression:
 - Log album when first track of that album starts applying.
 - Update fields:
   - `Title`
-  - `Artists` (`;` joined)
+  - `Artists` (write as multi-value tags; reader side may display `;`-joined)
   - `Disc subtitle`
   - `Album title`
-  - `Album artists` (`;` joined)
+  - `Album artists` (write as multi-value tags; reader side may display `;`-joined)
   - `Track number`
   - `Total tracks`
   - `Disc number`
