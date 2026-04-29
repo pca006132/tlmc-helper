@@ -44,6 +44,7 @@ Audit fields:
 - `disc_classification`
 - `different_album_artist`
 - `rewrite_chain_warning`
+- `inconsistent_date`
 
 All paths in logs/audit are relative to execution directory.
 
@@ -140,7 +141,8 @@ All fields optional per track.
 `structured.json` contains structure/editable track data only:
 - albums/discs/tracks
 - album artists per album
-- track fields (`title`, `date`, `track number`, `artists`, `genre`)
+- track fields (`title`, `track number`, `artists`)
+- optional track fields (`date`, `genre`)
 - each disc entry is a dictionary with:
   - `$subtitle` (optional): disc subtitle string for that disc
   - track-path keys mapping to track objects
@@ -176,22 +178,26 @@ Auto-generation rules:
     - for symbolic separators (`+`, `＋`, `x`, `&`, `＆`), surrounding spaces are required in normal split logic to avoid over-splitting
     - aggressive mode may additionally split no-space `&` / `＆` / `/` / `／` / `+` / `＋` when gated as plausible
 - Aggressive split gating:
-  - aggressively split exhaustively (max 5 iterations), then apply normal split behavior
-  - emit rule only if at least one resulting component (after normalization) matches another known normalized name in the same circle
+  - use greedy splitting over aggressive separators with offset scanning (outside parentheses only)
+  - for each candidate split, accept only when at least one side matches a known normalized name in the same circle
+  - on success, unresolved sides that still contain aggressive separators are pushed to a worklist for further splitting
   - each generated split rule is marked with confidence by this heuristic:
     - confident: gate condition satisfied
     - less confident: otherwise
   - when materializing JSON rewriting rules, less-confident generated rules are ordered first for manual review
 - Stage 2 normalization behavior (no NFKC / punctuation normalization):
-  - low-confidence parenthetical normalization rules:
+  - low-confidence regex normalization rules:
     - `NAME(AFFILIATION)` / `NAME (AFFILIATION)` / full-width paren variants -> `NAME`
     - `ROLE (CV:ARTIST)` / full-width variants (including `CV：`) -> `ARTIST`
-  - low-confidence normalization rules are ordered before high-confidence normalization rules for manual review
-  - fold full-width ASCII to half-width ASCII
-  - lowercase
-  - remove whitespace
-  - unify quotes (`'`, `“`, `”` -> `"`)
-  - choose canonical target variant by highest occurrence count (tie-break deterministic)
+  - high-confidence regex normalization rules:
+    - leading `vo.` / `VO.` prefix -> strip prefix (capture group 1)
+  - simple normalize rules:
+    - fold full-width ASCII to half-width ASCII
+    - lowercase
+    - remove whitespace
+    - unify quotes (`'`, `“`, `”` -> `"`)
+    - choose canonical target variant by highest occurrence count (tie-break deterministic)
+  - ordering: low-confidence regex -> high-confidence regex -> simple normalize
 - Stage 3 one-pass compilation:
   - generated rules are saturated so one-pass rewriting reaches stable outputs (max 5 iterations)
   - remove auto-generated rules whose `from` side cannot match any reachable source name
@@ -209,10 +215,22 @@ Outputs: `rewriting.json`, `update-metadata.json` (and `structured.json` if miss
 Steps:
 1. If `structured.json` is missing:
    - build it from metadata/path parsing
+   - path parsing uses fixed structure `circle/album/...` (album is always second-level directory)
+   - album folder parsing (regex-based):
+     - optional date token at start: `YYYY` / `YYYY.MM` / `YYYY.MM.DD`
+     - `-` is accepted as date separator input and normalized internally
+     - optional leading record-id bracket token (e.g. `[ABCD-1234]`)
+     - extract album name from the remaining album-folder component
+   - date inference/selection:
+     - infer date from album folder token when available (precision preserved; do not invent month/day)
+     - compare metadata date/year and inferred date using timestamp semantics
+     - if consistent and metadata is less precise, use inferred date
+     - if inconsistent, keep metadata value and emit `audit.json.inconsistent_date`
    - emit audits:
      - disc classification fallback -> `audit.json.disc_classification`
      - missing artists -> `audit.json.missing_info`
      - album artist inconsistency/mismatch -> `audit.json.different_album_artist`
+     - metadata/path date inconsistency -> `audit.json.inconsistent_date`
    - disc subtitle behavior:
      - single-disc albums usually omit `$subtitle`
      - if a disc already has an explicit `Disc subtitle` and it is unique within the disc, use it as `$subtitle`

@@ -577,6 +577,7 @@ dependencies = [
  "encoding_rs",
  "flac-codec",
  "id3",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

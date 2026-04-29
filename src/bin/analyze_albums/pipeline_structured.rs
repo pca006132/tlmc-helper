@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::Path;
+use std::str::FromStr;
+use std::sync::OnceLock;
 
+use id3::Timestamp;
+use regex::Regex;
 use serde_json::{Map, Value};
 use tlmc::logger::Logger;
 
@@ -40,22 +44,32 @@ pub(super) fn build_structured_from_metadata(
     let mut disc_classification = BTreeSet::new();
     let mut diff_album_artist = BTreeSet::new();
     let mut missing_info = BTreeSet::new();
+    let mut inconsistent_date = BTreeSet::new();
 
     for (track_path, fields) in metadata {
-        let (circle, album) = parse_track_path(&track_path)?;
+        let (circle, album, inferred_date) = parse_track_path(&track_path)?;
+        let metadata_date_text =
+            non_empty(get_s(&fields, "Date")).or_else(|| non_empty(get_s(&fields, "Year")));
+        let date = resolve_track_date(
+            &track_path,
+            metadata_date_text.as_deref().and_then(parse_timestamp_value),
+            inferred_date,
+            metadata_date_text.as_deref(),
+            &mut inconsistent_date,
+        );
         let circle_data = circles.entry(circle.clone()).or_default();
         let album_data = circle_data.albums.entry(album.clone()).or_default();
         album_data.tracks.push(TrackLite {
             path: track_path.clone(),
             title: get_s(&fields, "Title"),
-            date: get_s(&fields, "Date").or_else(|| get_s(&fields, "Year")),
+            date,
             disc_subtitle: get_s(&fields, "Disc subtitle"),
             track_number: get_n(&fields, "Track number"),
             artists: get_list(&fields, "Artists"),
             album_artists: get_list(&fields, "Album artists"),
             album_title: get_s(&fields, "Album title"),
             disc_number: get_n(&fields, "Disc number"),
-            genre: get_s(&fields, "Genre"),
+            genre: non_empty(get_s(&fields, "Genre")),
         });
     }
 
@@ -63,9 +77,9 @@ pub(super) fn build_structured_from_metadata(
     for (circle_name, circle_data) in circles {
         let mut out_circle = CircleStructured::default();
 
-        for (album_folder_name, album_data) in circle_data.albums {
-            let album_path = format!("{circle_name}/{album_folder_name}");
-            let mut album_name = derive_album_name_for_output(&album_folder_name);
+        for (album_name_from_path, album_data) in circle_data.albums {
+            let album_path = format!("{circle_name}/{album_name_from_path}");
+            let mut album_name = album_name_from_path.clone();
             let (discs, used_rule3) = classify_discs(&album_data.tracks);
             if used_rule3 {
                 disc_classification.insert(album_path.clone());
@@ -118,10 +132,10 @@ pub(super) fn build_structured_from_metadata(
                         t.path.clone(),
                         TrackStructured {
                             title: t.title.clone().unwrap_or_default(),
-                            date: t.date.clone().unwrap_or_default(),
+                            date: t.date.as_ref().map(timestamp_to_date_string),
                             track_number: t.track_number.unwrap_or(0),
                             artists: a,
-                            genre: t.genre.clone().unwrap_or_default(),
+                            genre: t.genre.clone(),
                         },
                     );
                 }
@@ -146,7 +160,7 @@ pub(super) fn build_structured_from_metadata(
             }
             let mut final_album_name = album_name.clone();
             if out_circle.albums.contains_key(&final_album_name) {
-                final_album_name = format!("{album_name} ({album_folder_name})");
+                final_album_name = format!("{album_name} (dup)");
             }
             out_circle.albums.insert(final_album_name, album_out);
         }
@@ -159,22 +173,21 @@ pub(super) fn build_structured_from_metadata(
             disc_classification,
             different_album_artist: diff_album_artist,
             missing_info,
+            inconsistent_date,
         },
     ))
 }
 
-pub(super) fn parse_track_path(track: &str) -> Result<(String, String), String> {
+pub(super) fn parse_track_path(track: &str) -> Result<(String, String, Option<Timestamp>), String> {
     let parts = track.split('/').collect::<Vec<_>>();
     if parts.len() < 3 {
         return Err("invalid track path".to_string());
     }
-
-    for i in 1..parts.len() {
-        if is_album_dir_name(parts[i]) {
-            return Ok((extract_circle_name(parts[i - 1])?, parts[i].to_string()));
-        }
-    }
-    Ok((extract_circle_name(parts[0])?, parts[1].to_string()))
+    let circle = extract_circle_name(parts[0])?;
+    let album_folder = parts[1].to_string();
+    let (inferred_date, album_name) = parse_album_folder_components(&album_folder)
+        .unwrap_or((None, album_folder.clone()));
+    Ok((circle, album_name, inferred_date))
 }
 
 pub(super) fn get_s(m: &Map<String, Value>, key: &str) -> Option<String> {
@@ -213,6 +226,9 @@ fn load_or_build_structured(
     }
     for p in audits.missing_info {
         logger.append_audit("missing_info", &p)?;
+    }
+    for p in audits.inconsistent_date {
+        logger.append_audit("inconsistent_date", &p)?;
     }
     let json = serde_json::to_string_pretty(&structured).map_err(|e| e.to_string())?;
     fs::write(exec_dir.join("structured.json"), json).map_err(|e| e.to_string())?;
@@ -313,59 +329,103 @@ fn extract_circle_name(raw: &str) -> Result<String, String> {
     }
 }
 
-fn is_album_dir_name(name: &str) -> bool {
-    let token = name.split_whitespace().next().unwrap_or_default();
-    let mut p = token.split('.');
-    let y = p.next().unwrap_or_default();
-    let m = p.next().unwrap_or_default();
-    let d = p.next().unwrap_or_default();
-    y.len() == 4
-        && m.len() == 2
-        && d.len() == 2
-        && y.chars().all(|c| c.is_ascii_digit())
-        && m.chars().all(|c| c.is_ascii_digit())
-        && d.chars().all(|c| c.is_ascii_digit())
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-fn derive_album_name_for_output(folder: &str) -> String {
-    let parts = folder.split_whitespace().collect::<Vec<_>>();
-    if parts.is_empty() {
-        return folder.to_string();
-    }
-    let mut i = 0usize;
-    if is_date_token(parts[0]) {
-        i += 1;
-    }
-    if i < parts.len() && is_bracket_token(parts[i]) {
-        i += 1;
-    }
-    let mut j = parts.len();
-    if j > i && is_bracket_token(parts[j - 1]) {
-        j -= 1;
-    }
-    let candidate = parts[i..j].join(" ").trim().to_string();
-    if candidate.is_empty() {
-        folder.to_string()
+fn parse_album_folder_components(folder: &str) -> Option<(Option<Timestamp>, String)> {
+    static ALBUM_FOLDER_RE: OnceLock<Regex> = OnceLock::new();
+    let re = ALBUM_FOLDER_RE.get_or_init(|| {
+        Regex::new(
+            r"^(?:(?P<date>\d{4}(?:[.-]\d{2}(?:[.-]\d{2})?)?)(?:\s+|$))?(?:\[[^\]]+\]\s+)?(?P<album>.*?)(?:\s+\[[^\]]+\])?$",
+        )
+        .expect("valid album folder regex")
+    });
+    let caps = re.captures(folder.trim())?;
+    let raw_album_name = caps.name("album")?.as_str().trim();
+    let album_name = if raw_album_name.starts_with('[') && raw_album_name.ends_with(']') {
+        String::new()
     } else {
-        candidate
+        raw_album_name.to_string()
+    };
+    let date = caps.name("date").and_then(|m| {
+        let normalized = m.as_str().trim().replace('.', "-");
+        Timestamp::from_str(&normalized).ok()
+    });
+    Some((date, album_name))
+}
+
+fn resolve_track_date(
+    track_path: &str,
+    metadata_date: Option<Timestamp>,
+    inferred_date: Option<Timestamp>,
+    metadata_date_text: Option<&str>,
+    inconsistent_date_audit: &mut BTreeSet<String>,
+) -> Option<Timestamp> {
+    match (metadata_date, inferred_date) {
+        (metadata, None) => metadata,
+        (None, Some(inferred)) => Some(inferred),
+        (Some(metadata), Some(inferred)) => {
+            let metadata_ts = metadata.clone();
+            if !timestamps_consistent(&metadata_ts, &inferred) {
+                let metadata_text = metadata_date_text
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| timestamp_to_date_string(&metadata));
+                inconsistent_date_audit
+                    .insert(format!(
+                        "{track_path}: metadata={}, inferred={}",
+                        metadata_text,
+                        timestamp_to_date_string(&inferred)
+                    ));
+                return Some(metadata);
+            }
+            if timestamp_precision_level(&metadata_ts) < timestamp_precision_level(&inferred) {
+                Some(inferred)
+            } else {
+                Some(metadata)
+            }
+        }
     }
 }
 
-fn is_date_token(token: &str) -> bool {
-    let mut p = token.split('.');
-    let y = p.next().unwrap_or_default();
-    let m = p.next().unwrap_or_default();
-    let d = p.next().unwrap_or_default();
-    y.len() == 4
-        && m.len() == 2
-        && d.len() == 2
-        && y.chars().all(|c| c.is_ascii_digit())
-        && m.chars().all(|c| c.is_ascii_digit())
-        && d.chars().all(|c| c.is_ascii_digit())
+fn parse_date_timestamp(value: &str) -> Option<Timestamp> {
+    let ts = Timestamp::from_str(value.trim()).ok()?;
+    if ts.hour.is_some() || ts.minute.is_some() || ts.second.is_some() {
+        return None;
+    }
+    Some(ts)
 }
 
-fn is_bracket_token(token: &str) -> bool {
-    token.len() >= 2 && token.starts_with('[') && token.ends_with(']')
+fn parse_timestamp_value(value: &str) -> Option<Timestamp> {
+    let normalized = value.replace('.', "-");
+    parse_date_timestamp(&normalized)
+}
+
+fn timestamp_to_date_string(ts: &Timestamp) -> String {
+    let mut out = ts.year.to_string();
+    if let Some(month) = ts.month {
+        out.push_str(&format!(".{month:02}"));
+    }
+    if let Some(day) = ts.day {
+        out.push_str(&format!(".{day:02}"));
+    }
+    out
+}
+
+fn timestamps_consistent(a: &Timestamp, b: &Timestamp) -> bool {
+    a.year == b.year
+        && (!a.month.is_some() || !b.month.is_some() || a.month == b.month)
+        && (!a.day.is_some() || !b.day.is_some() || a.day == b.day)
+}
+
+fn timestamp_precision_level(ts: &Timestamp) -> u8 {
+    if ts.day.is_some() {
+        3
+    } else if ts.month.is_some() {
+        2
+    } else {
+        1
+    }
 }
 
 fn get_n(m: &Map<String, Value>, key: &str) -> Option<u64> {

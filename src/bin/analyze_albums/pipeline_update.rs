@@ -13,7 +13,7 @@ pub(super) fn run_update_stage(
     let all_rewriting = rewriting_data.get("$all");
 
     for (track_path, orig) in metadata {
-        let (circle, _) = super::pipeline_structured::parse_track_path(track_path)?;
+        let (circle, _, _) = super::pipeline_structured::parse_track_path(track_path)?;
         let Some(circle_cfg) = rewriting_data.get(&circle) else {
             continue;
         };
@@ -100,7 +100,9 @@ fn materialize_metadata_from_structured(
                 for (track_path, track) in &disc.tracks {
                     let mut m = Map::new();
                     m.insert("Title".to_string(), Value::String(track.title.clone()));
-                    m.insert("Date".to_string(), Value::String(track.date.clone()));
+                    if let Some(date) = &track.date {
+                        m.insert("Date".to_string(), Value::String(date.clone()));
+                    }
                     if let Some(subtitle) = &disc.subtitle {
                         m.insert("Disc subtitle".to_string(), Value::String(subtitle.clone()));
                     }
@@ -112,7 +114,9 @@ fn materialize_metadata_from_structured(
                         "Artists".to_string(),
                         Value::Array(track.artists.iter().cloned().map(Value::String).collect()),
                     );
-                    m.insert("Genre".to_string(), Value::String(track.genre.clone()));
+                    if let Some(genre) = &track.genre {
+                        m.insert("Genre".to_string(), Value::String(genre.clone()));
+                    }
                     m.insert(
                         "Album title".to_string(),
                         Value::String(album_title.clone()),

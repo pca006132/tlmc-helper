@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::sync::OnceLock;
 
 use super::models::{CircleStructured, NameAggregation, RewriteRule, ScoredRewriteRule};
-use super::name_utils::{dedup_preserve, dedup_sorted, fold_fullwidth_ascii, normalize_name};
+use super::name_utils::{dedup_preserve, dedup_sorted, normalize_name};
+use regex::Regex;
 
 static PAREN_MAP: [(char, i32); 8] = [
     ('(', 1),
@@ -17,7 +19,7 @@ static PAREN_MAP: [(char, i32); 8] = [
 fn normal_split_separators() -> &'static [&'static str] {
     &[
         "ft.", "Ft.", "feat.", "Feat.", " + ", " ＋ ", " x ", "×", " & ", " ＆ ", " / ", " ／ ",
-        " vs. ", " vs ", "，", "、", "；", ",",
+        " vs. ", " vs ", "，", "、", "；", ",", " | ",
     ]
 }
 
@@ -25,14 +27,31 @@ fn aggressive_symbol_separators() -> &'static [&'static str] {
     &["&", "＆", "/", "／", "+", "＋"]
 }
 
+fn high_confidence_regex_rules() -> &'static [Regex] {
+    static RES: OnceLock<Vec<Regex>> = OnceLock::new();
+    RES.get_or_init(|| {
+        vec![Regex::new(r"(?i)^\s*vo\.\s*(.+?)\s*$").expect("valid leading vo regex")]
+    })
+}
+
+fn low_confidence_regex_rules() -> &'static [Regex] {
+    static RES: OnceLock<Vec<Regex>> = OnceLock::new();
+    RES.get_or_init(|| {
+        vec![
+            Regex::new(r"(?i)^\s*.+?\s*[\(（]\s*cv\s*[:：]\s*(.+?)\s*[\)）]\s*$")
+                .expect("valid cv parenthetical regex"),
+            Regex::new(r"^\s*(.+?)\s*[\(（\[【〔]\s*.+?\s*[\)）\]】〕]\s*$")
+                .expect("valid trailing parenthetical regex"),
+        ]
+    })
+}
+
 pub(super) fn generate_split_stage_output(
     raw_names: &[String],
     normal_split_rules: Vec<RewriteRule>,
     known_names: &HashSet<String>,
-    max_iter: usize,
 ) -> (Vec<RewriteRule>, Vec<String>) {
-    let split_rules =
-        stage1_generate_split_rules(raw_names, normal_split_rules, known_names, max_iter);
+    let split_rules = stage1_generate_split_rules(raw_names, normal_split_rules, known_names);
     let split_rewritten_names = rewrite_name_values(raw_names, &split_rules);
     (split_rules, split_rewritten_names)
 }
@@ -108,7 +127,8 @@ pub(super) fn dedup_rewrite_rules(rules: Vec<RewriteRule>) -> Vec<RewriteRule> {
             .find(|x: &&mut RewriteRule| same_name_set(&x.to, &r.to))
         {
             existing.from.extend(r.from);
-            existing.from = dedup_preserve(existing.from.clone());
+            let merged_from = std::mem::take(&mut existing.from);
+            existing.from = dedup_preserve(merged_from);
             continue;
         }
         if out
@@ -127,7 +147,6 @@ pub(super) fn aggregate_names_for_track(values: &[String]) -> NameAggregation {
         let split = dedup_preserve(
             split_candidates(&values[0])
                 .into_iter()
-                .map(|v| trim_leading_vo(&v).to_string())
                 .filter(|v| !v.is_empty())
                 .collect(),
         );
@@ -141,7 +160,7 @@ pub(super) fn aggregate_names_for_track(values: &[String]) -> NameAggregation {
         }
         return NameAggregation {
             names: split,
-            split_rules: dedup_rewrite_rules(split_rules),
+            split_rules,
         };
     }
     NameAggregation {
@@ -149,7 +168,6 @@ pub(super) fn aggregate_names_for_track(values: &[String]) -> NameAggregation {
             values
                 .iter()
                 .map(|v| v.trim().to_string())
-                .map(|v| trim_leading_vo(&v).to_string())
                 .filter(|v| !v.is_empty())
                 .collect(),
         ),
@@ -161,14 +179,10 @@ fn stage1_generate_split_rules(
     raw_names: &[String],
     normal_split_rules: Vec<RewriteRule>,
     known_names: &HashSet<String>,
-    max_iter: usize,
 ) -> Vec<RewriteRule> {
-    let aggressive_rules = dedup_rewrite_rules(build_aggressive_split_rules(
-        raw_names,
-        known_names,
-        max_iter,
-    ));
-    let merged_split_rules = dedup_rewrite_rules(merge_rules(normal_split_rules, aggressive_rules));
+    let aggressive_rules = build_aggressive_split_rules(raw_names, known_names);
+    let merged_split_rules =
+        dedup_rewrite_rules(normal_split_rules.into_iter().chain(aggressive_rules).collect());
     let scored_split_rules = score_split_rule_confidence(merged_split_rules, known_names);
     order_split_rules_by_confidence(scored_split_rules)
 }
@@ -177,14 +191,17 @@ fn stage2_generate_normalize_rules(
     split_rewritten_names: &[String],
     split_name_counts: &BTreeMap<String, u64>,
 ) -> Vec<RewriteRule> {
-    let low_confidence_rules = dedup_rewrite_rules(build_low_confidence_parenthetical_rules(
-        split_rewritten_names,
-    ));
-    let high_confidence_rules = dedup_rewrite_rules(build_normalize_rules(
-        split_rewritten_names,
-        split_name_counts,
-    ));
-    dedup_rewrite_rules(merge_rules(low_confidence_rules, high_confidence_rules))
+    let low_confidence_regex_rules = build_low_confidence_regex_rules(split_rewritten_names);
+    let high_confidence_regex_rules = build_high_confidence_regex_rules(split_rewritten_names);
+    let simple_normalize_rules =
+        build_simple_normalize_rules(split_rewritten_names, split_name_counts);
+    dedup_rewrite_rules(
+        low_confidence_regex_rules
+            .into_iter()
+            .chain(high_confidence_regex_rules)
+            .chain(simple_normalize_rules)
+            .collect(),
+    )
 }
 
 fn stage3_compile_one_pass_rules(
@@ -193,25 +210,10 @@ fn stage3_compile_one_pass_rules(
     raw_names: &[String],
     max_iter: usize,
 ) -> Vec<RewriteRule> {
-    let compiled = saturate_generated_rules(
-        dedup_rewrite_rules(merge_rules(normalize_rules, split_rules)),
-        max_iter,
-    );
+    let merged_rules =
+        dedup_rewrite_rules(normalize_rules.into_iter().chain(split_rules).collect());
+    let compiled = saturate_generated_rules(merged_rules, max_iter);
     retain_generated_rules_with_reachable_matches(compiled, raw_names, max_iter)
-}
-
-fn merge_rules(primary: Vec<RewriteRule>, secondary: Vec<RewriteRule>) -> Vec<RewriteRule> {
-    let mut out = Vec::new();
-    for r in primary.into_iter().chain(secondary) {
-        if out
-            .iter()
-            .any(|x: &RewriteRule| x.from == r.from && x.to == r.to)
-        {
-            continue;
-        }
-        out.push(r);
-    }
-    out
 }
 
 fn saturate_generated_rules(rules: Vec<RewriteRule>, max_iter: usize) -> Vec<RewriteRule> {
@@ -297,7 +299,6 @@ fn order_split_rules_by_confidence(scored_rules: Vec<ScoredRewriteRule>) -> Vec<
 fn build_aggressive_split_rules(
     values: &[String],
     known: &HashSet<String>,
-    _max_iter: usize,
 ) -> Vec<RewriteRule> {
     let mut out = Vec::new();
     let known_norm = known
@@ -380,7 +381,10 @@ fn split_once_outside_parens(
     None
 }
 
-fn build_normalize_rules(values: &[String], counts: &BTreeMap<String, u64>) -> Vec<RewriteRule> {
+fn build_simple_normalize_rules(
+    values: &[String],
+    counts: &BTreeMap<String, u64>,
+) -> Vec<RewriteRule> {
     let mut by_norm: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for v in values {
         by_norm
@@ -419,98 +423,36 @@ fn build_normalize_rules(values: &[String], counts: &BTreeMap<String, u64>) -> V
     out
 }
 
-fn build_low_confidence_parenthetical_rules(values: &[String]) -> Vec<RewriteRule> {
+fn build_high_confidence_regex_rules(values: &[String]) -> Vec<RewriteRule> {
+    build_regex_capture_rules(values, high_confidence_regex_rules())
+}
+
+fn build_low_confidence_regex_rules(values: &[String]) -> Vec<RewriteRule> {
+    build_regex_capture_rules(values, low_confidence_regex_rules())
+}
+
+fn build_regex_capture_rules(values: &[String], regexes: &[Regex]) -> Vec<RewriteRule> {
     let mut out = Vec::new();
     for value in values {
         let source = value.trim();
         if source.is_empty() {
             continue;
         }
-        if let Some(cv_artist) = extract_cv_artist_from_parenthetical(source)
-            && cv_artist != source
-        {
-            out.push(RewriteRule {
-                from: vec![source.to_string()],
-                to: vec![cv_artist],
-            });
-            continue;
-        }
-        if let Some(base_name) = strip_trailing_parenthetical(source)
-            && base_name != source
-        {
-            out.push(RewriteRule {
-                from: vec![source.to_string()],
-                to: vec![base_name],
-            });
-        }
-    }
-    out
-}
-
-fn strip_trailing_parenthetical(input: &str) -> Option<String> {
-    let (base, inside) = split_parenthetical_suffix(input)?;
-    if base.is_empty() || inside.is_empty() {
-        return None;
-    }
-    Some(base.to_string())
-}
-
-fn extract_cv_artist_from_parenthetical(input: &str) -> Option<String> {
-    let (_base, inside) = split_parenthetical_suffix(input)?;
-    let inside_folded = fold_fullwidth_ascii(inside);
-    let inside_trimmed = inside_folded.trim();
-    let inside_lower = inside_trimmed.to_ascii_lowercase();
-    let rest = if let Some(v) = inside_trimmed.strip_prefix("CV:") {
-        v
-    } else {
-        let idx = inside_lower.find("cv:")?;
-        if idx != 0 {
-            return None;
-        }
-        inside_trimmed.get(3..)?
-    };
-    let artist = rest.trim();
-    if artist.is_empty() {
-        return None;
-    }
-    Some(artist.to_string())
-}
-
-fn split_parenthetical_suffix(input: &str) -> Option<(&str, &str)> {
-    let s = input.trim();
-    if !(s.ends_with(')') || s.ends_with('）')) {
-        return None;
-    }
-    let (open_ch, close_ch) = if s.ends_with(')') {
-        ('(', ')')
-    } else {
-        ('（', '）')
-    };
-    let close_idx = s.char_indices().last()?.0;
-    let mut depth = 0_i32;
-    let mut open_idx = None;
-    for (idx, ch) in s.char_indices().rev() {
-        if ch == close_ch {
-            depth += 1;
-        } else if ch == open_ch {
-            depth -= 1;
-            if depth == 0 {
-                open_idx = Some(idx);
+        for re in regexes {
+            if let Some(caps) = re.captures(source) {
+                let target = caps.get(1).map(|m| m.as_str()).unwrap_or("").trim();
+                if target.is_empty() || target == source {
+                    break;
+                }
+                out.push(RewriteRule {
+                    from: vec![source.to_string()],
+                    to: vec![target.to_string()],
+                });
                 break;
             }
         }
     }
-    let open_idx = open_idx?;
-    if open_idx >= close_idx {
-        return None;
-    }
-    let base = s[..open_idx].trim();
-    let inside_start = open_idx + open_ch.len_utf8();
-    let inside = s[inside_start..close_idx].trim();
-    if base.is_empty() || inside.is_empty() {
-        return None;
-    }
-    Some((base, inside))
+    out
 }
 
 pub(super) fn split_candidates(value: &str) -> Vec<String> {
@@ -529,18 +471,6 @@ pub(super) fn split_candidates(value: &str) -> Vec<String> {
         .filter(|v| !v.is_empty())
         .collect()
 }
-
-fn trim_leading_vo(input: &str) -> &str {
-    let s = input.trim();
-    if s.get(..3)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("vo."))
-    {
-        s.get(3..).unwrap_or("").trim_start()
-    } else {
-        s
-    }
-}
-
 
 fn split_outside_parens_many(input: &str, seps: &[&str]) -> Vec<String> {
     let mut out = Vec::new();

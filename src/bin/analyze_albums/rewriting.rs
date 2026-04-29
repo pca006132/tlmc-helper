@@ -21,8 +21,10 @@ pub(super) fn build_rewriting_from_structured(
         for album in circle_data.albums.values() {
             for disc in &album.discs {
                 for track in disc.tracks.values() {
-                    if !track.genre.trim().is_empty() {
-                        genres.push(track.genre.clone());
+                    if let Some(genre) = &track.genre
+                        && !genre.trim().is_empty()
+                    {
+                        genres.push(genre.clone());
                     }
                 }
             }
@@ -80,7 +82,6 @@ pub(super) fn build_rewriting_from_structured(
                         &raw_artist_names,
                         super::rule_generation::dedup_rewrite_rules(normal_split_rules_artists),
                         &known_names,
-                        5,
                     ),
                     super::rule_generation::generate_split_stage_output(
                         &raw_album_artist_names,
@@ -88,7 +89,6 @@ pub(super) fn build_rewriting_from_structured(
                             normal_split_rules_album_artists,
                         ),
                         &known_names,
-                        5,
                     ),
                 );
                 let split_name_counts = super::rule_generation::count_name_occurrences(
@@ -215,7 +215,7 @@ fn build_global_rewriting_entry(
                     rewritten_artist_values.extend(track_a.iter().cloned());
                     track_fields.push((track_a, album_aa.clone()));
                     let genre = super::pipeline_rewriting::rewrite_genre(
-                        Some(track.genre.clone()),
+                        track.genre.clone(),
                         &genre_rules,
                         circle_rules
                             .default_genre

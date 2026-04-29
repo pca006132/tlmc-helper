@@ -40,6 +40,10 @@ Key points:
 - Run binaries from `MusicLibraryRoot`.
 - First-level folders must be circle folders.
 - Second-level entries are albums (`.rar` files or extracted folders).
+- Second-level album folder names are now parsed with a relaxed rule (`analyze-albums`):
+  - optional date prefix: `YYYY` / `YYYY.MM` / `YYYY.MM.DD` (separator `-` also accepted)
+  - optional first record-id bracket token, e.g. `[ABCD-1234]`
+  - both date and bracket are optional; album-name component is still required
 
 ## What each binary does
 
@@ -101,7 +105,9 @@ Edit `structured.json` and `rewriting.json` together: the former controls struct
 - `discs`: array; each disc entry is a dictionary:
   - optional `"$subtitle"`: disc subtitle
   - other keys are `track_path` entries mapping to track objects
-- track object fields: `title`, `date`, `track number`, `artists`, `genre`
+- track object fields:
+  - required: `title`, `track number`, `artists`
+  - optional: `date`, `genre`
 
 ## Core rewriting workflow
 
@@ -170,6 +176,16 @@ When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules 
   - scanning parses multi-values into arrays;
   - writing applies them back as multi-valued tags (not a single joined string).
 - Disc numbering is inferred from `structured.json` disc order (first disc map = Disc 1, etc.).
+- `analyze-albums` path parsing is fixed to `circle/album/...` (second-level folder is always the album folder).
+- Album folder parsing (regex-based) supports:
+  - optional date prefix: `YYYY` / `YYYY.MM` / `YYYY.MM.DD`
+  - both `.` and `-` date separators (internally handled with timestamp semantics)
+  - optional first record-id bracket token (for example `[ABC-1234]`)
+  - extracting the album-name component from the remaining folder text
+- Date handling:
+  - when metadata date is missing and folder date exists, folder date is used (without inventing month/day)
+  - when metadata date is consistent but less precise than folder date, folder date is preferred
+  - when inconsistent, metadata is kept and `audit.json.inconsistent_date` is emitted
 - `analyze-albums` now runs as a single flow:
   - if `structured.json` is missing, it is built first;
   - if `rewriting.json` is missing, rewriting rules are auto-generated first;
@@ -206,6 +222,8 @@ When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules 
   Action: unify names via rewriting rules or manual edits.
 - `rewrite_chain_warning`: potential incomplete chain in one-pass rewriting rules.  
   Action: flatten chain rules so one step maps directly to desired output.
+- `inconsistent_date`: metadata date conflicts with date inferred from the album folder.  
+  Action: verify the correct source of truth; if folder date is authoritative, fix metadata/structured values and rerun `analyze-albums`.
 
   Example (why this is bad):
   ```json

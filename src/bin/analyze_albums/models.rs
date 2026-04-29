@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use id3::Timestamp;
 use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
@@ -16,7 +17,7 @@ pub(super) struct AlbumData {
 pub(super) struct TrackLite {
     pub(super) path: String,
     pub(super) title: Option<String>,
-    pub(super) date: Option<String>,
+    pub(super) date: Option<Timestamp>,
     pub(super) disc_subtitle: Option<String>,
     pub(super) track_number: Option<u64>,
     pub(super) artists: Vec<String>,
@@ -67,11 +68,13 @@ pub(super) struct DiscStructured {
 #[derive(Serialize, Deserialize, Clone)]
 pub(super) struct TrackStructured {
     pub(super) title: String,
-    pub(super) date: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) date: Option<String>,
     #[serde(rename = "track number")]
     pub(super) track_number: u64,
     pub(super) artists: Vec<String>,
-    pub(super) genre: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) genre: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -94,4 +97,5 @@ pub(super) struct AnalysisAudits {
     pub(super) disc_classification: BTreeSet<String>,
     pub(super) different_album_artist: BTreeSet<String>,
     pub(super) missing_info: BTreeSet<String>,
+    pub(super) inconsistent_date: BTreeSet<String>,
 }

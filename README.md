@@ -37,6 +37,10 @@ English: [README_EN.md](README_EN.md)
 - 运行目录是“音乐库根目录”。
 - 第一层必须是社團目录。
 - 第二层是专辑（`.rar` 或已解压目录）。
+- 第二层“专辑目录名”现在支持宽松格式（`analyze-albums`）：
+  - 可选日期前缀：`YYYY` / `YYYY.MM` / `YYYY.MM.DD`（也接受 `-` 分隔）
+  - 可选首个记录号方括号：如 `[ABCD-1234]`
+  - 日期和方括号都可省略；但目录名必须包含专辑名部分
 
 ## 4 个程序分别做什么
 
@@ -99,7 +103,9 @@ cargo run --bin apply-tags
 - `discs`：数组，每个元素是一个字典：
   - 可选 `"$subtitle"`：该盘副标题
   - 其余键是 `track_path`，值为曲目对象
-- 曲目对象字段：`title`、`date`、`track number`、`artists`、`genre`
+- 曲目对象字段：
+  - 必填：`title`、`track number`、`artists`
+  - 可选：`date`、`genre`
 
 ## 重写工作流（非常重要）
 
@@ -151,12 +157,18 @@ cargo run --bin apply-tags
    - `analyze-albums` 不做 `;` / `\u0000` 这种二次分词；它直接使用 `metadata.json` 里的 artists / album artists 数组。
    - 再按常见连接符切分（如 `ft.`、`feat.`、` + `、` ＋ `、` x `、` & `、` ＆ `、` / `、` ／ `、` `vs.` / `vs`、`×`、`，`、`、`、`；`、`,` 等，括号外生效）。
 2. 再做名字归一化（normalization）：
-   - 全角 ASCII 折叠、转小写、去空白、引号统一；
-   - 同一归一化分组里，优先选择出现次数最多的写法作为目标写法。
-3. 低置信度归一化（parenthesis cases）：
+   - 分三类规则，按顺序执行：
+     1) 低置信度 regex（如 parenthetical / CV）
+     2) 高置信度 regex（如前缀 `vo.`）
+     3) simple normalize（全角 ASCII 折叠、转小写、去空白、引号统一；同一归一化分组优先出现次数最多写法）
+3. 低置信度 regex 归一化（parenthesis cases）：
    - `NAME (AFFILIATION)` -> `NAME`
    - `ROLE (CV:ARTIST)` -> `ARTIST`
    - 这两类规则按低置信度处理，并在输出里排在更前面，方便人工优先检查。
+4. aggressive split（激进切分）：
+   - 使用贪心 + offset 扫描，只尝试 aggressive 分隔符（如 `&`、`/`、`+`）；
+   - 每次候选切分只有在至少一侧命中已知名字（归一化后）时才接受；
+   - 未命中的另一侧若仍包含 aggressive 分隔符，会进入 worklist 继续尝试拆分。
 
 ## 其他关键行为
 
@@ -165,6 +177,16 @@ cargo run --bin apply-tags
   - 扫描时会把多值解析为数组；
   - 写回时会以多值标签形式写入（不是单字符串拼接）。
 - 盘号由 `structured.json` 的 `discs` 顺序自动推断（第 1 组是 Disc 1，以此类推）。
+- `analyze-albums` 的路径解析按固定层级处理：`circle/album/...`，第二层目录始终视为专辑目录。
+- 专辑目录名解析（regex）支持：
+  - 可选日期前缀：`YYYY` / `YYYY.MM` / `YYYY.MM.DD`
+  - 日期分隔符兼容 `.` 与 `-`（内部统一按 timestamp 语义处理）
+  - 可选首个方括号记录号（如 `[ABC-1234]`）
+  - 从目录名中提取“专辑名”部分作为结构化专辑名
+- 日期处理：
+  - 若 metadata 缺失日期，且专辑目录可提取日期，则使用目录日期（保留原有精度，不补月/日）
+  - 若 metadata 日期与目录日期一致但 metadata 精度更低，优先目录日期
+  - 若不一致，保留 metadata，并写入 `audit.json.inconsistent_date`
 - `analyze-albums` 只有一个流程：
   - 若缺少 `structured.json`，先自动构建；
   - 若缺少 `rewriting.json`，先自动生成规则；
@@ -203,6 +225,8 @@ cargo run --bin apply-tags
   处理：在 rewriting 规则里统一，或手工调整结构数据。
 - `rewrite_chain_warning`：重写规则可能存在链式不完整（单轮重写下可能改不彻底）。  
   处理：把链式规则扁平化，确保一步到目标写法。
+- `inconsistent_date`：metadata 日期与专辑目录推断日期不一致。  
+  处理：人工确认真实日期来源；若目录日期更可靠，修正 metadata 或结构化结果后重跑 `analyze-albums`。
 
   示例（为什么不好）：
   ```json
