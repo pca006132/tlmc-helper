@@ -90,6 +90,8 @@ fn apply_patch(path: &Path, patch: &Map<String, Value>) -> Result<(), String> {
     if let Some(v) = get_s(patch, "Date").or_else(|| get_s(patch, "Year"))
         && let Some(ts) = parse_timestamp_like(&v)
     {
+        // Keep YEAR in sync when DATE is updated (e.g. YYYY.MM.DD -> YYYY).
+        tag.set_year(ts.year);
         tag.set_date(ts);
     }
     if let Some(v) = get_i32(patch, "Year") {

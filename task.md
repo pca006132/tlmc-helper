@@ -134,6 +134,8 @@ All fields optional per track.
 - Always run a single flow that generates:
   - `rewriting.json`
   - `update-metadata.json`
+- Optional positional CLI args: circle names (`analyze-albums <circle...>`).
+  - When provided, `update-metadata.json` is filtered to tracks under the specified circles only.
 - If `structured.json` does not exist, build and write it first from `metadata.json` (and emit related audits), then continue.
 
 ### `structured.json` scope
@@ -210,6 +212,7 @@ Auto-generation rules:
 ### Behavior
 
 Inputs: `metadata.json`, optional `structured.json`, optional `rewriting.json`  
+CLI args: optional circle-name list (`analyze-albums <circle...>`)  
 Outputs: `rewriting.json`, `update-metadata.json` (and `structured.json` if missing)
 
 Steps:
@@ -245,6 +248,7 @@ Steps:
 7. Rebuild + overlay track edits from existing `structured.json`.
 8. Materialize desired metadata and diff vs original `metadata.json`.
 9. Write `update-metadata.json` (changed tracks only).
+   - If circle args are present, include only tracks whose path resolves to those circles.
 
 Single-disc suppression:
 - If target `Total discs == 1`, do not emit `Disc number` / `Total discs` updates.

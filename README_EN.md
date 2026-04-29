@@ -70,6 +70,8 @@ In build output (usually `target/release`):
 ```bash
 cargo run --bin scan-albums
 cargo run --bin analyze-albums
+# generate update-metadata.json for specific circles only (multiple names supported)
+cargo run --bin analyze-albums "RD-Sounds" "ALiCE'S EMOTiON"
 # edit structured.json / rewriting.json
 cargo run --bin analyze-albums
 cargo run --bin apply-tags
@@ -81,6 +83,7 @@ cargo run --bin apply-tags
 - `structured.json`: album/disc/track structure edits
 - `rewriting.json`: rewriting rules, default genre, and name counts
 - `update-metadata.json`: patch that `apply-tags` consumes (generated on every `analyze-albums` run)
+  - if `analyze-albums` is run with circle-name arguments, it only includes patches for those circles
 - `audit.json`: all review-needed findings
 - `verbose.log`: processing details
 - `error.log`: hard errors (exists only if errors occur)

@@ -68,6 +68,8 @@ English: [README_EN.md](README_EN.md)
 ```bash
 cargo run --bin scan-albums
 cargo run --bin analyze-albums
+# 仅为指定社團生成 update-metadata.json（可传多个社團名）
+cargo run --bin analyze-albums "RD-Sounds" "TUMENECO"
 # 编辑 structured.json / rewriting.json
 cargo run --bin analyze-albums
 cargo run --bin apply-tags
@@ -79,6 +81,7 @@ cargo run --bin apply-tags
 - `structured.json`：专辑/分盘/曲目结构主文件
 - `rewriting.json`：重写规则、默认流派、名字统计（给人和 LLM 看）
 - `update-metadata.json`：实际待写回的差异补丁（每次 `analyze-albums` 都会生成）
+  - 若 `analyze-albums` 传入社團名参数，则仅包含这些社團下的曲目补丁
 - `audit.json`：所有需要人工关注的问题
 - `verbose.log`：详细过程日志
 - `error.log`：硬错误（仅在有错误时存在）
