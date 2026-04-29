@@ -126,10 +126,12 @@ All fields optional per track.
 
 ## `analyze-albums`
 
-### Mode switch
+### Execution flow
 
-- If `structured.json` does not exist -> analysis mode.
-- Otherwise -> update mode.
+- Always run a single flow that generates:
+  - `rewriting.json`
+  - `update-metadata.json`
+- If `structured.json` does not exist, build and write it first from `metadata.json` (and emit related audits), then continue.
 
 ### `structured.json` scope
 
@@ -157,55 +159,62 @@ Count rules:
 - each track contributes at most +1 per name
 
 Auto-generation rules:
-- First-pass generation order for artists/album-artists:
-  1. normalization rules
-  2. normal split rules
-  3. gated aggressive split rules
-- Aggressive split currently targets `&` / `＆` (including no-space forms) and is gated:
+- Three-stage generation pipeline for artists/album-artists:
+  1. split-candidate rule generation
+  2. normalization rule generation from split-rewritten names
+  3. compile for one-pass execution (saturate + prune unreachable rules)
+- Stage 1 split-candidate generation:
+  - normal split rules from detected single-field joined names
+  - gated aggressive split rules for highly plausible separators:
+    - `&`, `＆`, `/`, `／`, `+`, `＋`, ` x `, ` vs. `, ` vs `
+    - for symbolic separators (`+`, `＋`, `x`, `&`, `＆`), surrounding spaces are required in normal split logic to avoid over-splitting
+    - aggressive mode may additionally split no-space `&` / `＆` / `/` / `／` / `+` / `＋` when gated as plausible
+- Aggressive split gating:
   - aggressively split exhaustively (max 5 iterations), then apply normal split behavior
-  - emit aggressive rule only if at least one resulting component normalized-form matches another known name in the same circle
-- Generated rules are saturated to support one-pass rewriting:
-  - saturate rule outputs with max 5 iterations
-- Remove auto-generated rules whose `from` side cannot match any source name.
+  - emit rule only if at least one resulting component (after normalization) matches another known normalized name in the same circle
+  - each generated split rule is marked with confidence by this heuristic:
+    - confident: gate condition satisfied
+    - less confident: otherwise
+  - when materializing JSON rewriting rules, less-confident generated rules are ordered first for manual review
+- Stage 2 normalization behavior (no NFKC / punctuation normalization):
+  - low-confidence parenthetical normalization rules:
+    - `NAME(AFFILIATION)` / `NAME (AFFILIATION)` / full-width paren variants -> `NAME`
+    - `ROLE (CV:ARTIST)` / full-width variants (including `CV：`) -> `ARTIST`
+  - low-confidence normalization rules are ordered before high-confidence normalization rules for manual review
+  - fold full-width ASCII to half-width ASCII
+  - lowercase
+  - remove whitespace
+  - unify quotes (`'`, `“`, `”` -> `"`)
+  - choose canonical target variant by highest occurrence count (tie-break deterministic)
+- Stage 3 one-pass compilation:
+  - generated rules are saturated so one-pass rewriting reaches stable outputs (max 5 iterations)
+  - remove auto-generated rules whose `from` side cannot match any reachable source name
+- Separator behavior:
+  - before split-operator handling, tokenize artist/album-artist fields using `;` and NUL (`\u0000`)
+  - normal split candidates are applied outside parentheses only
+  - separators include: `feat.`, `Feat.`, ` + `, ` ＋ `, ` x `, ` & `, ` ＆ `, ` / `, ` ／ `, ` vs. `, ` vs `, `×`, `，`, `、`, `；`, `,`
+  - symbolic separators with surrounding spaces are treated as safer defaults
 
-### Analysis mode behavior
+### Behavior
 
-Input: `metadata.json`  
-Outputs: `structured.json`, `rewriting.json`
+Inputs: `metadata.json`, optional `structured.json`, optional `rewriting.json`  
+Outputs: `rewriting.json`, `update-metadata.json` (and `structured.json` if missing)
 
 Steps:
-1. Build `structured.json` from metadata/path parsing.
-2. Disc classification:
-   - same album title + no disc number -> disc 1
-   - explicit disc numbers first
-   - remaining grouped by album title with new consecutive disc numbers
-   - fallback usage -> `audit.json.disc_classification`
-3. Missing artists -> `audit.json.missing_info`
-4. Album artist inconsistency/mismatch -> `audit.json.different_album_artist`
-5. Generate `rewriting.json` from generated `structured.json`.
-
-### Update mode behavior
-
-Inputs: `metadata.json`, `structured.json`, optional `rewriting.json`  
-Outputs: `rewriting.json`, `update-metadata.json`
-
-Steps:
-1. If `rewriting.json` missing, generate it from existing `structured.json`.
-2. If present, preserve rewriting rules + default genre.
-3. Refresh `all artists` / `all album artists` / `all genres` with counting source depending on rewriting existence:
-   - if `rewriting.json` missing (fresh generation):
-     - derive deduplicated names by applying generated rules to raw names
-     - exclude auto-generated normalization rules from counting rewrite application
-     - include split + aggressive split rules for counting rewrite application
-     - count per-track matches against raw artist/album-artist fields (pre-rewrite)
-   - if `rewriting.json` exists:
-     - use existing rules as-is (no normalization-vs-other distinction)
-     - count per-track matches against rewritten artist/album-artist fields
-4. Validate rewrite chains from `rewriting.json`; emit deduped `rewrite_chain_warning`.
-5. Apply rewriting/default genre to `metadata.json` snapshot.
-6. Rebuild + overlay track edits from existing `structured.json`.
-7. Materialize desired metadata and diff vs original `metadata.json`.
-8. Write `update-metadata.json` (changed tracks only).
+1. If `structured.json` is missing:
+   - build it from metadata/path parsing
+   - emit audits:
+     - disc classification fallback -> `audit.json.disc_classification`
+     - missing artists -> `audit.json.missing_info`
+     - album artist inconsistency/mismatch -> `audit.json.different_album_artist`
+2. If `rewriting.json` is missing, auto-generate rewriting rules from `structured.json`.
+3. If `rewriting.json` exists, preserve rewriting rules + default genre.
+4. Refresh `all artists` / `all album artists` / `all genres` from `structured.json` after applying current rewriting rules. Use rewritten artist/album-artist fields for per-track counting.
+5. Validate rewrite chains from `rewriting.json`; emit deduped `rewrite_chain_warning`.
+6. Apply rewriting/default genre to `metadata.json` snapshot.
+7. Rebuild + overlay track edits from existing `structured.json`.
+8. Materialize desired metadata and diff vs original `metadata.json`.
+9. Write `update-metadata.json` (changed tracks only).
 
 Single-disc suppression:
 - If target `Total discs == 1`, do not emit `Disc number` / `Total discs` updates.
@@ -215,6 +224,7 @@ Single-disc suppression:
 - One-pass, top-to-bottom match.
 - First match applies; outputs do not continue rewriting.
 - Results deduplicated.
+- Name tokenization/splitting should be handled explicitly in generation/application flow, not implicitly inside generic rewrite matching logic.
 
 ## `apply-tags`
 

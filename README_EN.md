@@ -45,7 +45,7 @@ Key points:
 
 - `split-album`: extract, pair FLAC/CUE, split, initial tagging
 - `scan-albums`: scan existing tags -> `metadata.json`
-- `analyze-albums`: generate/update `structured.json` and `rewriting.json`, and generate `update-metadata.json` in update mode
+- `analyze-albums`: unified flow that generates/updates `structured.json` and `rewriting.json`, and always generates `update-metadata.json`
 - `apply-tags`: write `update-metadata.json` back to tracks
 
 ## Windows users: which `.exe` to click?
@@ -54,9 +54,9 @@ In build output (usually `target/release`):
 
 1. `split-album.exe` (optional; only if you need splitting)
 2. `scan-albums.exe`
-3. `analyze-albums.exe` (first run)
+3. `analyze-albums.exe` (first run auto-generates `structured.json` / `rewriting.json` / `update-metadata.json`)
 4. edit `structured.json` and/or `rewriting.json`
-5. `analyze-albums.exe` (second run)
+5. `analyze-albums.exe` (refreshes aggregations and recomputes `update-metadata.json`)
 6. `apply-tags.exe`
 
 `.exe` files are directly clickable. `.bat` wrappers are not required. Outputs are persisted to files (`verbose.log`, `audit.json`), and `error.log` is created only when errors occur.
@@ -76,7 +76,7 @@ cargo run --bin apply-tags
 - `metadata.json`: raw scanned snapshot
 - `structured.json`: album/disc/track structure edits
 - `rewriting.json`: rewriting rules, default genre, and name counts
-- `update-metadata.json`: patch that `apply-tags` consumes
+- `update-metadata.json`: patch that `apply-tags` consumes (generated on every `analyze-albums` run)
 - `audit.json`: all review-needed findings
 - `verbose.log`: processing details
 - `error.log`: hard errors (exists only if errors occur)
@@ -109,7 +109,8 @@ Format:
 { "from": ["Old Variant"], "to": ["Target A", "Target B"] }
 ```
 
-Rules are one-pass per token (not recursive chains).
+Rules are one-pass per token (not recursive chains).  
+Rules with the same `to` target are auto-combined by `to` set equality (order-insensitive), e.g. `A -> C` and `B -> C` become `["A", "B"] -> ["C"]`.
 
 Why we do not rewrite until saturation:
 
@@ -133,12 +134,31 @@ More complex example (aligned with `task.md`):
 
 Potential chain issues are reported as `rewrite_chain_warning` in `audit.json`.
 
+### Auto-generated rules (`analyze-albums`)
+
+When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules with this flow:
+
+1. Split names first:
+   - preprocessing tokenization by `;` and `\u0000`;
+   - then split by common joiners/separators (for example ` + `, ` ＋ `, ` x `, ` & `, ` ＆ `, ` / `, ` ／ `, `vs.` / `vs`, `×`, `，`, `、`, `,`; outside parentheses).
+2. Normalize name variants:
+   - full-width ASCII folding, lowercase, whitespace removal, quote unification;
+   - within a normalized variant group, choose the most frequent observed form as canonical target.
+3. Low-confidence parenthesis normalization:
+   - `NAME (AFFILIATION)` -> `NAME`
+   - `ROLE (CV:ARTIST)` -> `ARTIST`
+   - these low-confidence rules are placed earlier in output for easier manual review.
+
 ## Other important behavior
 
 - `scan-albums` treats `;` as a multi-artist separator.
 - `apply-tags` joins multi-artist values with `;`.
 - Disc numbering is inferred from `structured.json` disc order (first disc map = Disc 1, etc.).
-- In update mode, `analyze-albums` preserves rules/default genre from existing `rewriting.json`, then refreshes `all artists`, `all album artists`, and `all genres`.
+- `analyze-albums` now runs as a single flow:
+  - if `structured.json` is missing, it is built first;
+  - if `rewriting.json` is missing, rewriting rules are auto-generated first;
+  - if `rewriting.json` exists, rules and `default genre` are preserved, then `all artists` / `all album artists` / `all genres` are refreshed.
+- Name preprocessing tokenizes by `;` and `\\u0000` first; those separators are not kept inside rewriting rules nor inside `all artists` / `all album artists` names.
 
 ## Recommended checks after each run
 

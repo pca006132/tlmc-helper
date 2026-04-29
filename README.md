@@ -42,7 +42,7 @@ English: [README_EN.md](README_EN.md)
 
 - `split-album`：解包、配对 FLAC/CUE、分轨并写初始标签
 - `scan-albums`：扫描已有音频标签 -> `metadata.json`
-- `analyze-albums`：生成/更新 `structured.json` 和 `rewriting.json`，并在更新阶段生成 `update-metadata.json`
+- `analyze-albums`：统一流程生成/更新 `structured.json` 和 `rewriting.json`，并始终生成 `update-metadata.json`
 - `apply-tags`：把 `update-metadata.json` 回写到音频文件
 
 ## Windows 用户：点击哪个 exe？
@@ -51,9 +51,9 @@ English: [README_EN.md](README_EN.md)
 
 1. `split-album.exe`（可选，如果你要从整轨+CUE分轨）
 2. `scan-albums.exe`
-3. `analyze-albums.exe`（第一次）
+3. `analyze-albums.exe`（首次会自动生成 `structured.json` / `rewriting.json` / `update-metadata.json`）
 4. 编辑 `structured.json` 和/或 `rewriting.json`
-5. `analyze-albums.exe`（第二次）
+5. `analyze-albums.exe`（刷新规则统计并重算 `update-metadata.json`）
 6. `apply-tags.exe`
 
 `.exe` 可以直接双击，不需要 `.bat`。  
@@ -74,7 +74,7 @@ cargo run --bin apply-tags
 - `metadata.json`：扫描得到的原始标签快照
 - `structured.json`：专辑/分盘/曲目结构主文件
 - `rewriting.json`：重写规则、默认流派、名字统计（给人和 LLM 看）
-- `update-metadata.json`：实际待写回的差异补丁
+- `update-metadata.json`：实际待写回的差异补丁（每次 `analyze-albums` 都会生成）
 - `audit.json`：所有需要人工关注的问题
 - `verbose.log`：详细过程日志
 - `error.log`：硬错误（仅在有错误时存在）
@@ -107,7 +107,8 @@ cargo run --bin apply-tags
 { "from": ["旧写法"], "to": ["新写法A", "新写法B"] }
 ```
 
-规则是**单轮匹配**，不会无限链式继续改。
+规则是**单轮匹配**，不会无限链式继续改。  
+同一目标 `to` 的规则会自动合并 `from`（按集合语义），例如 `A -> C` + `B -> C` 会合并为 `["A", "B"] -> ["C"]`。
 
 为什么不做到“重写到收敛（saturation）”：
 
@@ -131,12 +132,31 @@ cargo run --bin apply-tags
 
 如果规则存在这种“还可以继续改”的链，`audit.json` 里会有 `rewrite_chain_warning` 提示你检查。
 
+### 自动生成规则（analyze-albums）
+
+`analyze-albums` 会在缺少 `rewriting.json` 时自动生成一批初始规则，核心逻辑如下：
+
+1. 先做名字切分（split）：
+   - 先按预处理分隔符 `;` 和 `\u0000` 分词；
+   - 再按常见连接符切分（如 ` + `、` ＋ `、` x `、` & `、` ＆ `、` / `、` ／ `、` `vs.` / `vs`、`×`、`，`、`、`、`,` 等，括号外生效）。
+2. 再做名字归一化（normalization）：
+   - 全角 ASCII 折叠、转小写、去空白、引号统一；
+   - 同一归一化分组里，优先选择出现次数最多的写法作为目标写法。
+3. 低置信度归一化（parenthesis cases）：
+   - `NAME (AFFILIATION)` -> `NAME`
+   - `ROLE (CV:ARTIST)` -> `ARTIST`
+   - 这两类规则按低置信度处理，并在输出里排在更前面，方便人工优先检查。
+
 ## 其他关键行为
 
 - `scan-albums` 读取多艺术家时把 `;` 当分隔符。
 - `apply-tags` 写回多艺术家时也用 `;` 拼接。
 - 盘号由 `structured.json` 的 `discs` 顺序自动推断（第 1 组是 Disc 1，以此类推）。
-- `analyze-albums` 在 update 模式下会保留 `rewriting.json` 里的规则和 `default genre`，并刷新名字统计与 `all genres`。
+- `analyze-albums` 只有一个流程：
+  - 若缺少 `structured.json`，先自动构建；
+  - 若缺少 `rewriting.json`，先自动生成规则；
+  - 若 `rewriting.json` 已存在，则保留其规则和 `default genre`，并刷新 `all artists` / `all album artists` / `all genres`。
+- 名字预处理会先按 `;` 和 `\\u0000` 分割；这些分隔符不会保留在规则项或 `all artists` / `all album artists` 名字中。
 
 ## 审计建议
 
