@@ -23,8 +23,10 @@ fn main() {
 }
 
 fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
-    let text = fs::read_to_string(exec_dir.join("update-metadata.json")).map_err(|e| e.to_string())?;
-    let updates: BTreeMap<String, Value> = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let text =
+        fs::read_to_string(exec_dir.join("update-metadata.json")).map_err(|e| e.to_string())?;
+    let updates: BTreeMap<String, Value> =
+        serde_json::from_str(&text).map_err(|e| e.to_string())?;
     let mut logged_albums = std::collections::BTreeSet::new();
     let mut jobs = Vec::new();
     for (track_rel, patch) in &updates {
@@ -66,8 +68,7 @@ fn apply_patch(path: &Path, patch: &Map<String, Value>) -> Result<(), String> {
     if let Some(v) = get_s(patch, "Album title") {
         tag.set_album_title(&v);
     }
-    if let Some(v) = get_list(patch, "Album artists")
-    {
+    if let Some(v) = get_list(patch, "Album artists") {
         let v: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
         tag.set_album_artists(&v);
     }
@@ -86,10 +87,10 @@ fn apply_patch(path: &Path, patch: &Map<String, Value>) -> Result<(), String> {
     if let Some(v) = get_u16(patch, "Total discs") {
         tag.set_total_discs(v);
     }
-    if let Some(v) = get_s(patch, "Date").or_else(|| get_s(patch, "Year")) {
-        if let Some(ts) = parse_timestamp_like(&v) {
-            tag.set_date(ts);
-        }
+    if let Some(v) = get_s(patch, "Date").or_else(|| get_s(patch, "Year"))
+        && let Some(ts) = parse_timestamp_like(&v)
+    {
+        tag.set_date(ts);
     }
     if let Some(v) = get_i32(patch, "Year") {
         tag.set_year(v);

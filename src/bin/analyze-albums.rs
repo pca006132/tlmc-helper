@@ -40,7 +40,7 @@ fn run_analyze_albums(exec_dir: &Path, logger: &mut Logger) -> Result<(), String
     let all_rewriting = rewriting_data.get("$all");
 
     for (track_path, orig) in &metadata {
-        let (circle, _) = parse_track_path(&track_path)?;
+        let (circle, _) = parse_track_path(track_path)?;
         let Some(circle_cfg) = rewriting_data.get(&circle) else {
             continue;
         };
@@ -79,16 +79,16 @@ fn run_analyze_albums(exec_dir: &Path, logger: &mut Logger) -> Result<(), String
                 Value::Array(album_artists.into_iter().map(Value::String).collect()),
             );
         }
-        if genre != get_s(orig, "Genre") {
-            if let Some(g) = genre {
-                patch.insert("Genre".to_string(), Value::String(g));
-            }
+        if genre != get_s(orig, "Genre")
+            && let Some(g) = genre
+        {
+            patch.insert("Genre".to_string(), Value::String(g));
         }
-        if !patch.is_empty() {
-            if let Some(entry) = updated_metadata.get_mut(track_path) {
-                for (k, v) in &patch {
-                    entry.insert(k.clone(), v.clone());
-                }
+        if !patch.is_empty()
+            && let Some(entry) = updated_metadata.get_mut(track_path)
+        {
+            for (k, v) in &patch {
+                entry.insert(k.clone(), v.clone());
             }
         }
     }
@@ -389,9 +389,7 @@ fn rewrite_genre(
     rules: &[RewriteRule],
     default_genre: Option<String>,
 ) -> Option<String> {
-    let Some(value) = input.or(default_genre) else {
-        return None;
-    };
+    let value = input.or(default_genre)?;
     for r in rules {
         if r.from.iter().any(|f| f == &value) {
             return r.to.first().cloned();
@@ -427,7 +425,6 @@ fn aggregate_names_for_track(values: &[String]) -> NameAggregation {
             values
                 .iter()
                 .map(|v| v.trim().to_string())
-                .into_iter()
                 .map(|v| trim_leading_vo(&v).to_string())
                 .filter(|v| !v.is_empty())
                 .collect(),
@@ -609,7 +606,7 @@ fn materialize_metadata_from_structured(
     structured: &BTreeMap<String, CircleStructured>,
 ) -> BTreeMap<String, Map<String, Value>> {
     let mut out = BTreeMap::new();
-    for (_circle, circle_data) in structured {
+    for circle_data in structured.values() {
         for (album_title, album_data) in &circle_data.albums {
             let total_discs = album_data.discs.len() as u64;
             for (disc_idx, disc) in album_data.discs.iter().enumerate() {
@@ -729,10 +726,10 @@ fn apply_rewrites_to_structured_new(
             &circle_rewriting.album_artists_rewriting,
             all_rewriting.map(|v| &v.album_artists_rewriting),
         );
-        for (_album_name, album) in &mut circle.albums {
+        for album in circle.albums.values_mut() {
             album.album_artists = rewrite_names(album.album_artists.clone(), &album_artist_rules);
             for disc in &mut album.discs {
-                for (_track_path, track) in &mut disc.tracks {
+                for track in disc.tracks.values_mut() {
                     track.artists = rewrite_names(track.artists.clone(), &artist_rules);
                 }
             }
@@ -935,7 +932,8 @@ fn build_global_rewriting_entry(
             &circle_rules.album_artists_rewriting,
             Some(&global_album_artist_rules),
         );
-        let genre_rules = chain_rules_with_global(&circle_rules.genre_rewriting, Some(&global_genre_rules));
+        let genre_rules =
+            chain_rules_with_global(&circle_rules.genre_rewriting, Some(&global_genre_rules));
 
         for album in circle_data.albums.values() {
             let album_aa = rewrite_names(album.album_artists.clone(), &album_artist_rules);
@@ -1045,7 +1043,7 @@ fn stage3_compile_one_pass_rules(
 
 fn merge_rules(primary: Vec<RewriteRule>, secondary: Vec<RewriteRule>) -> Vec<RewriteRule> {
     let mut out = Vec::new();
-    for r in primary.into_iter().chain(secondary.into_iter()) {
+    for r in primary.into_iter().chain(secondary) {
         if out
             .iter()
             .any(|x: &RewriteRule| x.from == r.from && x.to == r.to)
@@ -1057,7 +1055,10 @@ fn merge_rules(primary: Vec<RewriteRule>, secondary: Vec<RewriteRule>) -> Vec<Re
     out
 }
 
-fn chain_rules_with_global(primary: &[RewriteRule], global: Option<&Vec<RewriteRule>>) -> Vec<RewriteRule> {
+fn chain_rules_with_global(
+    primary: &[RewriteRule],
+    global: Option<&Vec<RewriteRule>>,
+) -> Vec<RewriteRule> {
     let mut out = primary.to_vec();
     if let Some(global) = global {
         out.extend(global.iter().cloned());
@@ -1443,9 +1444,7 @@ fn normalize_name(v: &str) -> String {
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect::<String>()
-        .replace('\'', "\"")
-        .replace('“', "\"")
-        .replace('”', "\"")
+        .replace(['\'', '“', '”'], "\"")
 }
 
 fn fold_fullwidth_ascii(input: &str) -> String {

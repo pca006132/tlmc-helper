@@ -118,7 +118,11 @@ fn scan_track(path: &Path) -> Result<Value, String> {
     insert_str(&mut m, "Title", tag.title());
 
     insert_str_list(&mut m, "Artists", tag.artists().map(split_names));
-    insert_str_list(&mut m, "Album artists", tag.album_artists().map(split_names));
+    insert_str_list(
+        &mut m,
+        "Album artists",
+        tag.album_artists().map(split_names),
+    );
     insert_str(&mut m, "Disc subtitle", tag.disc_subtitle());
 
     insert_str(&mut m, "Date", tag.date().map(|v| v.to_string()));

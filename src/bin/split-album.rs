@@ -58,7 +58,10 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
         let circle_entries = match fs::read_dir(&circle_path) {
             Ok(v) => v,
             Err(err) => {
-                logger.error(&format!("read_dir {} error: {err}", rel(exec_dir, &circle_path)))?;
+                logger.error(&format!(
+                    "read_dir {} error: {err}",
+                    rel(exec_dir, &circle_path)
+                ))?;
                 continue;
             }
         };
@@ -115,7 +118,11 @@ fn run(exec_dir: &Path, logger: &mut Logger) -> Result<(), String> {
     Ok(())
 }
 
-fn process_album_target(exec_dir: &Path, logger: &mut Logger, ctx: &AlbumContext) -> Result<(), String> {
+fn process_album_target(
+    exec_dir: &Path,
+    logger: &mut Logger,
+    ctx: &AlbumContext,
+) -> Result<(), String> {
     let album_dir = &ctx.album_dir;
     if let Some(rar_path) = ctx.rar_path.as_deref() {
         if !album_dir.exists() {
@@ -200,7 +207,12 @@ fn process_album(exec_dir: &Path, logger: &mut Logger, ctx: &AlbumContext) -> Re
         .rar_path
         .as_deref()
         .and_then(parse_archive_date)
-        .or_else(|| album_dir.file_name().and_then(OsStr::to_str).and_then(parse_album_date));
+        .or_else(|| {
+            album_dir
+                .file_name()
+                .and_then(OsStr::to_str)
+                .and_then(parse_album_date)
+        });
     let is_multi_disc = pairs.len() > 1;
     for (flac_path, cue_path) in pairs {
         logger.verbose(
@@ -229,7 +241,10 @@ fn process_album(exec_dir: &Path, logger: &mut Logger, ctx: &AlbumContext) -> Re
                 ))?;
             }
             Err(PairError::SkipAlbum(err)) => {
-                logger.error(&format!("album skipped {}: {err}", rel(exec_dir, album_dir)))?;
+                logger.error(&format!(
+                    "album skipped {}: {err}",
+                    rel(exec_dir, album_dir)
+                ))?;
                 return Ok(());
             }
         }
@@ -369,7 +384,11 @@ fn split_and_tag(
     Ok(())
 }
 
-fn process_track_job(source_data: Arc<Vec<u8>>, cue: Arc<CueData>, job: TrackJob) -> Result<TrackResult, String> {
+fn process_track_job(
+    source_data: Arc<Vec<u8>>,
+    cue: Arc<CueData>,
+    job: TrackJob,
+) -> Result<TrackResult, String> {
     let mut reader =
         FlacSampleReader::new_seekable(Cursor::new(source_data.as_slice())).map_err(fe)?;
     let start = job.start;
@@ -392,7 +411,9 @@ fn process_track_job(source_data: Arc<Vec<u8>>, cue: Arc<CueData>, job: TrackJob
     Ok(TrackResult {
         out_path: job.out_path,
         track_id: job.track.id,
-        missing_info: cue.album_title.is_none() || job.track.title.is_none() || job.track.performer.is_none(),
+        missing_info: cue.album_title.is_none()
+            || job.track.title.is_none()
+            || job.track.performer.is_none(),
     })
 }
 
@@ -467,7 +488,11 @@ fn scan_album_files(album_dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
             continue;
         }
         let p = entry.into_path();
-        match p.extension().and_then(OsStr::to_str).map(|v| v.to_ascii_lowercase()) {
+        match p
+            .extension()
+            .and_then(OsStr::to_str)
+            .map(|v| v.to_ascii_lowercase())
+        {
             Some(ext) if ext == "flac" => flacs.push(p),
             Some(ext) if ext == "cue" => cues.push(p),
             _ => {}
