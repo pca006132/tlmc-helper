@@ -114,6 +114,7 @@ pub(super) fn build_structured_from_metadata(
             let mut album_out = AlbumStructured::default();
             let disc_count = discs.len();
             for disc in discs {
+                let assign_track_numbers_by_order = disc.iter().all(|t| t.track_number.is_none());
                 let explicit_disc_subtitle = derive_explicit_disc_subtitle_in_disc(&disc);
                 let derived_disc_subtitle = if explicit_disc_subtitle.is_none() && disc_count > 1 {
                     derive_disc_subtitle_from_album_title_in_disc(&disc)
@@ -121,7 +122,7 @@ pub(super) fn build_structured_from_metadata(
                     None
                 };
                 let mut disc_tracks = BTreeMap::new();
-                for t in disc {
+                for (idx, t) in disc.into_iter().enumerate() {
                     if t.artists.is_empty() {
                         missing_info.insert(album_path.clone());
                     }
@@ -139,7 +140,11 @@ pub(super) fn build_structured_from_metadata(
                         TrackStructured {
                             title: t.title.clone().unwrap_or_default(),
                             date: t.date.as_ref().map(timestamp_to_date_string),
-                            track_number: t.track_number.unwrap_or(0),
+                            track_number: if assign_track_numbers_by_order {
+                                (idx as u64) + 1
+                            } else {
+                                t.track_number.unwrap_or(0)
+                            },
                             artists: a,
                             genre: t.genre.clone(),
                         },
@@ -277,7 +282,20 @@ fn classify_discs(tracks: &[TrackLite]) -> (Vec<Vec<TrackLite>>, bool) {
                 .or_default()
                 .push(t);
         }
-        for (_, group) in by_title {
+        let mut groups = by_title.into_values().collect::<Vec<_>>();
+        groups.sort_by(|a, b| {
+            let a_has_track_no = a.iter().any(|t| t.track_number.is_some());
+            let b_has_track_no = b.iter().any(|t| t.track_number.is_some());
+            b_has_track_no
+                .cmp(&a_has_track_no)
+                .then_with(|| b.len().cmp(&a.len()))
+                .then_with(|| {
+                    let a_first = a.first().map(|t| t.path.as_str()).unwrap_or("");
+                    let b_first = b.first().map(|t| t.path.as_str()).unwrap_or("");
+                    a_first.cmp(b_first)
+                })
+        });
+        for group in groups {
             by_disc.insert(next, group);
             next += 1;
         }
