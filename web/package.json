@@ -6,14 +6,25 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
+    "check:gui": "tsc -p tsconfig.gui.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "analyze-albums": "tsx src/cli/analyze-albums.ts"
+    "analyze-albums": "tsx src/cli/analyze-albums.ts",
+    "gui:dev": "vite",
+    "gui:build": "vite build",
+    "gui:preview": "vite preview"
   },
   "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@yaireo/tagify": "^4.35.4",
+    "sortablejs": "^1.15.6",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0",
+    "vite": "^7.0.0",
     "vitest": "^3.2.0"
   }
 }

@@ -10,8 +10,12 @@ This directory contains a TypeScript port of `analyze-albums` logic, split into 
 
 - `npm install`
 - `npm run check`
+- `npm run check:gui`
 - `npm test`
 - `npm run analyze-albums -- [circle ...]`
+- `npm run gui:dev`
+- `npm run gui:build`
+- `npm run gui:preview`
 
 ## CLI behavior
 
@@ -32,3 +36,20 @@ Top-level APIs are exposed in `src/core/api.ts`:
 - `runPhase3(input, logger)`
 
 The logger contract is `AnalyzeLogger` from `src/core/logger.ts`.
+
+## GUI editor
+
+The browser GUI lives in `src/gui` and edits `structured.json` and `rewriting.json` with
+the same domain model used by the CLI.
+
+Behavior:
+
+- Import `metadata.json` (required), and optional `structured.json` / `rewriting.json`.
+- Two views: structured editor and rewriting editor.
+- Rewriting editor includes special `$all` circle for global rules.
+- Import and sync run in a Web Worker to keep UI responsive.
+- Edits are local-only until `Sync now` is pressed.
+- `Sync now` recomputes rewriting using current in-memory `structured.json` so exports match CLI behavior.
+- Audit logs are shown in a dedicated panel with filter and clear actions.
+- Session state (`metadata`, `structured`, `rewriting`, and audit log) is persisted in local storage.
+- Download buttons export `structured.json`, `rewriting.json`, and computed `update-metadata.json`.
