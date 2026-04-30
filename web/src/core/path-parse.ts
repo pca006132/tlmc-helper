@@ -97,8 +97,7 @@ function parseAlbumFolderComponents(
   if (!match?.groups) {
     return undefined;
   }
-  const rawAlbum = (match.groups.album ?? "").trim();
-  const album = rawAlbum.startsWith("[") && rawAlbum.endsWith("]") ? "" : rawAlbum;
+  const album = (match.groups.album ?? "").trim();
   const date = match.groups.date
     ? parseTimestampValue(match.groups.date.replace(/\./g, "-"))
     : undefined;

@@ -40,16 +40,16 @@ Key points:
 - Run binaries from `MusicLibraryRoot`.
 - First-level folders must be circle folders.
 - Second-level entries are albums (`.rar` files or extracted folders).
-- Second-level album folder names are now parsed with a relaxed rule (`analyze-albums`):
+- Second-level album folder names use a relaxed parser:
   - optional date prefix: `YYYY` / `YYYY.MM` / `YYYY.MM.DD` (separator `-` also accepted)
   - optional first record-id bracket token, e.g. `[ABCD-1234]`
   - both date and bracket are optional; album-name component is still required
 
-## What each binary does
+## 3 Rust binaries + Web App
 
 - `split-album`: extract, pair FLAC/CUE, split, initial tagging
 - `scan-albums`: scan existing tags -> `metadata.json`
-- `analyze-albums`: unified flow that generates/updates `structured.json` and `rewriting.json`, and always generates `update-metadata.json`
+- Web App: generate/update `structured.json`, `rewriting.json`, and `update-metadata.json`
 - `apply-tags`: write `update-metadata.json` back to tracks
 
 ## Windows users: which `.exe` to click?
@@ -58,22 +58,19 @@ In build output (usually `target/release`):
 
 1. `split-album.exe` (optional; only if you need splitting)
 2. `scan-albums.exe`
-3. `analyze-albums.exe` (first run auto-generates `structured.json` / `rewriting.json` / `update-metadata.json`)
-4. edit `structured.json` and/or `rewriting.json`
-5. `analyze-albums.exe` (refreshes aggregations and recomputes `update-metadata.json`)
+3. open the Web App (prefer the GitHub Pages deployment)
+4. import `metadata.json` (optionally also `structured.json` / `rewriting.json`)
+5. edit in UI, click `Sync now`, then download updated `structured.json` / `rewriting.json` / `update-metadata.json`
 6. `apply-tags.exe`
 
 `.exe` files are directly clickable. `.bat` wrappers are not required. Outputs are persisted to files (`verbose.log`, `audit.json`), and `error.log` is created only when errors occur.
+
+GitHub Pages URL: `https://pca006132.github.io/tlmc-helper/` (after enabling Pages for this repository)
 
 ## CLI commands (optional)
 
 ```bash
 cargo run --bin scan-albums
-cargo run --bin analyze-albums
-# generate update-metadata.json for specific circles only (multiple names supported)
-cargo run --bin analyze-albums "RD-Sounds" "ALiCE'S EMOTiON"
-# edit structured.json / rewriting.json
-cargo run --bin analyze-albums
 cargo run --bin apply-tags
 ```
 
@@ -82,13 +79,20 @@ cargo run --bin apply-tags
 - `metadata.json`: raw scanned snapshot
 - `structured.json`: album/disc/track structure edits
 - `rewriting.json`: rewriting rules, default genre, and name counts
-- `update-metadata.json`: patch that `apply-tags` consumes (generated on every `analyze-albums` run)
-  - if `analyze-albums` is run with circle-name arguments, it only includes patches for those circles
+- `update-metadata.json`: patch consumed by `apply-tags` (generated after each Web App `Sync now`)
 - `audit.json`: all review-needed findings
 - `verbose.log`: processing details
-- `error.log`: hard errors (exists only if errors occur)
+- `error.log`: hard errors (exists only when errors occur)
 
-## `structured.json` vs `rewriting.json`
+## Recommended workflow (Web App first)
+
+1. `split-album` (only when splitting is needed)
+2. `scan-albums`
+3. open Web App, import files, edit, click `Sync now`
+4. download updated `update-metadata.json`
+5. `apply-tags`
+
+## `structured.json` vs `rewriting.json` (for manual editing)
 
 - `structured.json`: structure and track-level editable fields only.
 - `rewriting.json`: rewriting and aggregation fields:
@@ -112,6 +116,8 @@ Edit `structured.json` and `rewriting.json` together: the former controls struct
   - required: `title`, `track number`, `artists`
   - optional: `date`, `genre`
 
+- Track title normalization: when track number is `1`, titles like `1 Name`, `01. Name`, `(01) Name`, or `[01]-Name` are normalized to `Name` and logged to `audit.track_title_rewrite`.
+
 ## Core rewriting workflow
 
 For each circle:
@@ -119,7 +125,7 @@ For each circle:
 1. Inspect `all album artists` and `all artists` in `rewriting.json`.
 2. Identify variants of the same person/group name (typos, aliases, formatting).
 3. Add rewriting rules in `rewriting.json`.
-4. Run `analyze-albums` again.
+4. Click `Sync now` in the Web App.
 5. Re-check refreshed counts/lists in `rewriting.json` and confirm unwanted variants are gone.
 
 Repeat until the aggregated lists look clean.
@@ -138,7 +144,7 @@ Rules with the same `to` target are auto-combined by `to` set equality (order-in
 Why we do not rewrite until saturation:
 
 - Some names are genuinely ambiguous; automatic multi-pass rewriting can over-merge into wrong targets.
-- One-pass + ordered early-match gives you precise control: place a "keep as-is" or preferred mapping rule earlier to stop later rules from touching that token.
+- One-pass + ordered early-match gives precise control: place a preferred mapping rule earlier to stop later rules from touching that token.
 - This lets users intentionally skip downstream matches when needed.
 
 More complex example (aligned with `task.md`):
@@ -157,13 +163,13 @@ More complex example (aligned with `task.md`):
 
 Potential chain issues are reported as `rewrite_chain_warning` in `audit.json`.
 
-### Auto-generated rules (`analyze-albums`)
+### Auto-generated rules (Web App Sync)
 
-When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules with this flow:
+When `rewriting.json` is missing, the Web App generates initial rules with this flow:
 
 1. Split names first:
-   - preprocessing tokenization by `;` and `\u0000`;
-   - then split by common joiners/separators (for example ` + `, ` ＋ `, ` x `, ` & `, ` ＆ `, ` / `, ` ／ `, `vs.` / `vs`, `×`, `，`, `、`, `,`; outside parentheses).
+   - no secondary tokenization by `;` / `\u0000`; it uses artist arrays from `metadata.json` directly.
+   - then split by common joiners/separators (for example `ft.`, `feat.`, ` + `, ` ＋ `, ` x `, ` & `, ` ＆ `, ` / `, ` ／ `, `vs.` / `vs`, `×`, `，`, `、`, `；`, `,`; outside parentheses).
 2. Normalize name variants:
    - full-width ASCII folding, lowercase, whitespace removal, quote unification;
    - within a normalized variant group, choose the most frequent observed form as canonical target.
@@ -171,6 +177,17 @@ When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules 
    - `NAME (AFFILIATION)` -> `NAME`
    - `ROLE (CV:ARTIST)` -> `ARTIST`
    - these low-confidence rules are placed earlier in output for easier manual review.
+4. Aggressive split:
+   - greedy + offset scan over aggressive separators (`&`, `/`, `+`);
+   - accept a split only if at least one side matches known normalized names;
+   - unmatched side that still contains aggressive separators is queued for further splitting.
+
+## Web compatibility notes
+
+- New-circle rule generation: if `rewriting.json` exists and a new circle appears, rules are auto-generated for that circle.
+- Structured rebuild audits: when structured is rebuilt from metadata, audits are emitted.
+- Update coverage: update generation includes `Year` and `Total tracks` where applicable.
+- Remaining assumptions: `Comment` is preserved; rewriting remains one-pass first-match with dedupe; `$all` rules are preserved and never auto-generated.
 
 ## Other important behavior
 
@@ -179,7 +196,7 @@ When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules 
   - scanning parses multi-values into arrays;
   - writing applies them back as multi-valued tags (not a single joined string).
 - Disc numbering is inferred from `structured.json` disc order (first disc map = Disc 1, etc.).
-- `analyze-albums` path parsing is fixed to `circle/album/...` (second-level folder is always the album folder).
+- Web App path parsing is fixed to `circle/album/...` (second-level folder is always the album folder).
 - Album folder parsing (regex-based) supports:
   - optional date prefix: `YYYY` / `YYYY.MM` / `YYYY.MM.DD`
   - both `.` and `-` date separators (internally handled with timestamp semantics)
@@ -189,7 +206,7 @@ When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules 
   - when metadata date is missing and folder date exists, folder date is used (without inventing month/day)
   - when metadata date is consistent but less precise than folder date, folder date is preferred
   - when inconsistent, metadata is kept and `audit.json.inconsistent_date` is emitted
-- `analyze-albums` now runs as a single flow:
+- Web App `Sync now` runs one flow:
   - if `structured.json` is missing, it is built first;
   - if `rewriting.json` is missing, rewriting rules are auto-generated first;
   - if `rewriting.json` exists, rules and `default genre` are preserved, then `all artists` / `all album artists` / `all genres` are refreshed.
@@ -226,7 +243,7 @@ When `rewriting.json` is missing, `analyze-albums` auto-generates initial rules 
 - `rewrite_chain_warning`: potential incomplete chain in one-pass rewriting rules.  
   Action: flatten chain rules so one step maps directly to desired output.
 - `inconsistent_date`: metadata date conflicts with date inferred from the album folder.  
-  Action: verify the correct source of truth; if folder date is authoritative, fix metadata/structured values and rerun `analyze-albums`.
+  Action: verify the correct source of truth; if folder date is authoritative, fix metadata/structured values and run `Sync now` again in the Web App.
 
   Example (why this is bad):
   ```json
@@ -258,5 +275,5 @@ Then rerun `split-album` to clear the false positives.
 ## Safety
 
 1. Back up first.
-2. Validate on a small subset before full library runs.
+2. Validate on a small subset before full-library runs.
 3. Spot-check `update-metadata.json` before `apply-tags`.

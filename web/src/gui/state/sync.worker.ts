@@ -2,9 +2,9 @@ import {
   computeUpdates,
   initializeEditorState,
   syncEditorState,
-  type AuditEntry,
+  type AuditLog,
   type EditorState,
-} from "./editor";
+} from "./editor.js";
 import type { MetadataMap, RewritingData, StructuredData } from "../../domain/models.js";
 
 type WorkerRequest =
@@ -27,8 +27,8 @@ type WorkerRequest =
     };
 
 type WorkerResponse =
-  | { id: number; ok: true; type: "import"; state: EditorState; audits: AuditEntry[] }
-  | { id: number; ok: true; type: "sync"; state: EditorState; audits: AuditEntry[] }
+  | { id: number; ok: true; type: "import"; state: EditorState; audits: AuditLog }
+  | { id: number; ok: true; type: "sync"; state: EditorState; audits: AuditLog }
   | { id: number; ok: true; type: "compute-updates"; updates: unknown }
   | { id: number; ok: false; error: string };
 
@@ -43,14 +43,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       const rewriting = request.rewritingText
         ? (JSON.parse(request.rewritingText) as RewritingData)
         : undefined;
-      const state = initializeEditorState(metadata, structured, rewriting);
-      const synced = syncEditorState(state);
+      const initialized = initializeEditorState(metadata, structured, rewriting);
       post({
         id: request.id,
         ok: true,
         type: "import",
-        state: synced.state,
-        audits: synced.audits,
+        state: initialized.state,
+        audits: initialized.audits,
       });
       return;
     }

@@ -32,9 +32,5 @@ name = "scan-albums"
 path = "src/bin/scan-albums.rs"
 
 [[bin]]
-name = "analyze-albums"
-path = "src/bin/analyze-albums.rs"
-
-[[bin]]
 name = "apply-tags"
 path = "src/bin/apply-tags.rs"

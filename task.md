@@ -19,12 +19,15 @@ Single source of truth for current behavior.
 
 This layout is required and not auto-inferred.
 
-## Binaries
+## Rust Binaries + Web App
 
 1. `split-album`
 2. `scan-albums`
-3. `analyze-albums`
+3. Web App (`web`, via GUI `Sync now`)
 4. `apply-tags`
+
+Hosted web app (GitHub Pages): `https://<your-github-username>.github.io/tlmc/`  
+The repository includes a Pages workflow that builds from `web/` and deploys automatically.
 
 ## Logging / Audit
 
@@ -127,15 +130,14 @@ All fields optional per track.
 `Artists` / `Album artists` parse `;` as separator.
 `scan-albums` is responsible for this tokenization; downstream binaries use the parsed list values as-is.
 
-## `analyze-albums`
+## Web App Sync (`web`)
 
 ### Execution flow
 
 - Always run a single flow that generates:
   - `rewriting.json`
   - `update-metadata.json`
-- Optional positional CLI args: circle names (`analyze-albums <circle...>`).
-  - When provided, `update-metadata.json` is filtered to tracks under the specified circles only.
+- Circle filtering is done in the web UI selection flow when exporting updates.
 - If `structured.json` does not exist, build and write it first from `metadata.json` (and emit related audits), then continue.
 
 ### `structured.json` scope
@@ -204,7 +206,7 @@ Auto-generation rules:
   - generated rules are saturated so one-pass rewriting reaches stable outputs (max 5 iterations)
   - remove auto-generated rules whose `from` side cannot match any reachable source name
 - Separator behavior:
-  - tokenization is not performed in `analyze-albums`; it consumes already-tokenized artist/album-artist arrays from `metadata.json`
+  - tokenization is not performed in Web App Sync; it consumes already-tokenized artist/album-artist arrays from `metadata.json`
   - normal split candidates are applied outside parentheses only
   - separators include: `feat.`, `Feat.`, ` + `, ` ＋ `, ` x `, ` & `, ` ＆ `, ` / `, ` ／ `, ` vs. `, ` vs `, `×`, `，`, `、`, `；`, `,`
   - symbolic separators with surrounding spaces are treated as safer defaults
@@ -212,7 +214,7 @@ Auto-generation rules:
 ### Behavior
 
 Inputs: `metadata.json`, optional `structured.json`, optional `rewriting.json`  
-CLI args: optional circle-name list (`analyze-albums <circle...>`)  
+UI controls: circle-aware editing and export in the web app  
 Outputs: `rewriting.json`, `update-metadata.json` (and `structured.json` if missing)
 
 Steps:
@@ -238,6 +240,7 @@ Steps:
      - single-disc albums usually omit `$subtitle`
      - if a disc already has an explicit `Disc subtitle` and it is unique within the disc, use it as `$subtitle`
      - otherwise, for multi-disc albums, if any track in a disc has `Album title`, choose the track with smallest `Track number` (tie-break by lexicographically smallest track path) and use that `Album title` as `$subtitle`
+  - Track title normalization during structured build (TS-only): for track number `1`, titles like `1 Name`, `01. Name`, `(01) Name`, `[01]-Name` normalize to `Name` and log to `audit.track_title_rewrite`.
 2. If `rewriting.json` is missing, auto-generate rewriting rules from `structured.json`.
 3. If `rewriting.json` exists, preserve rewriting rules + default genre.
 4. Refresh `all artists` / `all album artists` / `all genres` from `structured.json` after applying current rewriting rules. Use rewritten artist/album-artist fields for per-track counting.
@@ -260,6 +263,13 @@ Single-disc suppression:
 - Results deduplicated.
 - Name tokenization/splitting should be handled explicitly in generation/application flow, not implicitly inside generic rewrite matching logic.
 - Rule priority is: circle-specific rules first, then `$all` rules.
+
+### Web
+
+- New-circle rule generation: if `rewriting.json` exists and a new circle appears, rules are auto-generated for that circle.
+- Structured rebuild audits: when structured is rebuilt from metadata, audits are emitted.
+- Update coverage: update generation includes `Year` and `Total tracks` where applicable.
+- Remaining assumptions: `Comment` is preserved; rewriting remains one-pass first-match with dedupe; `$all` rules are preserved and never auto-generated.
 
 ## `apply-tags`
 

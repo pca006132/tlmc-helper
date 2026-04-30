@@ -7,15 +7,15 @@ import type {
   TrackStructured,
 } from "../domain/models.js";
 import { TagInput } from "./components/TagInput";
-import type { AuditEntry, EditorState } from "./state/editor";
+import type { AuditLog, EditorState } from "./state/editor";
 import { downloadJsonFile } from "./utils/json";
 
 type TabKey = "structured" | "rewriting";
 type RewritingTarget = "artists rewriting" | "album artists rewriting" | "genre rewriting";
 type AuditFilter = "all" | string;
 type WorkerResponse =
-  | { id: number; ok: true; type: "import"; state: EditorState; audits: AuditEntry[] }
-  | { id: number; ok: true; type: "sync"; state: EditorState; audits: AuditEntry[] }
+  | { id: number; ok: true; type: "import"; state: EditorState; audits: AuditLog }
+  | { id: number; ok: true; type: "sync"; state: EditorState; audits: AuditLog }
   | { id: number; ok: true; type: "compute-updates"; updates: unknown }
   | { id: number; ok: false; error: string };
 const DB_NAME = "tlmc-gui";
@@ -24,7 +24,7 @@ const SESSION_KEY = "latest";
 
 export function App() {
   const [editor, setEditor] = useState<EditorState | undefined>(undefined);
-  const [audits, setAudits] = useState<AuditEntry[]>([]);
+  const [auditLog, setAuditLog] = useState<AuditLog>({});
   const [auditFilter, setAuditFilter] = useState<AuditFilter>("all");
   const [statusMessage, setStatusMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -55,14 +55,26 @@ export function App() {
   const selectedAlbum = structuredCircleData?.albums[structuredAlbum];
   const rewritingCircleData = editor?.rewriting[rewritingCircle];
   const rewritingRules = rewritingCircleData?.[rewritingTarget] ?? [];
+  const rewriteRuleDuplicateCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const rule of rewritingRules) {
+      const signature = getRuleSignature(rule);
+      counts.set(signature, (counts.get(signature) ?? 0) + 1);
+    }
+    return counts;
+  }, [rewritingRules]);
   const auditCodes = useMemo(
-    () => [...new Set(audits.map((entry) => entry.code))].sort((a, b) => a.localeCompare(b)),
-    [audits],
+    () => Object.keys(auditLog).sort((a, b) => a.localeCompare(b)),
+    [auditLog],
   );
-  const visibleAudits = useMemo(
-    () => (auditFilter === "all" ? audits : audits.filter((entry) => entry.code === auditFilter)),
-    [auditFilter, audits],
-  );
+  const visibleAuditLines = useMemo(() => {
+    if (auditFilter === "all") {
+      return auditCodes.flatMap((code) =>
+        (auditLog[code] ?? []).map((line) => ({ code, line })),
+      );
+    }
+    return (auditLog[auditFilter] ?? []).map((line) => ({ code: auditFilter, line }));
+  }, [auditCodes, auditFilter, auditLog]);
 
   useEffect(() => {
     const worker = new Worker(new URL("./state/sync.worker.ts", import.meta.url), {
@@ -101,7 +113,7 @@ export function App() {
         setStructuredCircle(firstCircle);
         setStructuredAlbum(firstAlbum);
         setRewritingCircle(saved.state.rewriting.$all ? "$all" : firstCircle);
-        setAudits(saved.audits ?? []);
+        setAuditLog(normalizeAuditLog(saved.audits));
         setStatusMessage("Restored previous session.");
       } catch {
         setStatusMessage("Failed to restore previous session.");
@@ -113,10 +125,10 @@ export function App() {
     if (!editor) {
       return;
     }
-    void saveSession({ state: editor, audits }).catch(() => {
+    void saveSession({ state: editor, audits: auditLog }).catch(() => {
       setStatusMessage("Warning: failed to persist session.");
     });
-  }, [editor, audits]);
+  }, [editor, auditLog]);
 
   function commitStructured(updater: (draft: EditorState) => void): void {
     setEditor((previous) => {
@@ -175,6 +187,7 @@ export function App() {
     }
     ruleSortableRef.current = Sortable.create(rulesRef.current, {
       animation: 120,
+      handle: ".rule-header",
       onEnd: ({ oldIndex, newIndex }: SortableEvent) => {
         if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) {
           return;
@@ -250,11 +263,11 @@ export function App() {
         ? Object.keys(initial.structured[firstCircle].albums).sort((a, b) => a.localeCompare(b))[0] ?? ""
         : "";
       setEditor(initial);
-      setAudits(response.audits);
       setAuditFilter("all");
       setStructuredCircle(firstCircle);
       setStructuredAlbum(firstAlbum);
       setRewritingCircle(initial.rewriting.$all ? "$all" : firstCircle);
+      setAuditLog(normalizeAuditLog(response.audits));
       setStatusMessage("Import success.");
     } catch (error) {
       setStatusMessage(
@@ -282,12 +295,12 @@ export function App() {
       ? Object.keys(initial.structured[firstCircle].albums).sort((a, b) => a.localeCompare(b))[0] ?? ""
       : "";
     setEditor(initial);
-    setAudits(response.audits);
     setAuditFilter("all");
     setStructuredCircle(firstCircle);
     setStructuredAlbum(firstAlbum);
     setRewritingCircle(initial.rewriting.$all ? "$all" : firstCircle);
     setStatusMessage("Loaded debug sample.");
+    setAuditLog(normalizeAuditLog(response.audits));
     setIsLoading(false);
   }
 
@@ -303,7 +316,7 @@ export function App() {
       return;
     }
     setEditor(response.state);
-    setAudits((previous) => [...previous, ...response.audits]);
+    setAuditLog(normalizeAuditLog(response.audits));
     setStatusMessage("Sync complete.");
     setIsLoading(false);
   }
@@ -341,37 +354,46 @@ export function App() {
 
       {editor && (
         <>
-          <div className="panel row">
-            <label>
-              View
-              <select value={tab} onChange={(event) => setTab(event.target.value as TabKey)}>
-                <option value="structured">structured.json</option>
-                <option value="rewriting">rewriting.json</option>
-              </select>
-            </label>
-            <button
-              type="button"
-              onClick={() => void onSync()}
-            >
-              Sync now
-            </button>
-            <button type="button" onClick={() => downloadJsonFile("structured.json", editor.structured)}>
-              Download structured.json
-            </button>
-            <button type="button" onClick={() => downloadJsonFile("rewriting.json", editor.rewriting)}>
-              Download rewriting.json
-            </button>
-            <button
-              type="button"
-              onClick={() => void onDownloadUpdates()}
-            >
-              Download update-metadata.json
-            </button>
+          <div className="panel">
+            <h2>Workspace</h2>
+            <div className="toolbar workspace-toolbar">
+              <div className="row">
+                <label>
+                  <select value={tab} onChange={(event) => setTab(event.target.value as TabKey)}>
+                    <option value="structured">structured.json</option>
+                    <option value="rewriting">rewriting.json</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void onSync()}
+                >
+                  Sync now
+                </button>
+              </div>
+              <div className="full-row">
+                <div className="field-label">Download</div>
+                <div className="row row-tight">
+                  <button type="button" onClick={() => downloadJsonFile("structured.json", editor.structured)}>
+                    structured.json
+                  </button>
+                  <button type="button" onClick={() => downloadJsonFile("rewriting.json", editor.rewriting)}>
+                    rewriting.json
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onDownloadUpdates()}
+                  >
+                    update-metadata.json
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
 
           {tab === "structured" ? (
             <div className="panel">
-              <h2>structured.json editor</h2>
+              <h2>Album Metadata</h2>
               <div className="row">
                 <label>
                   Circle
@@ -410,7 +432,7 @@ export function App() {
               {selectedAlbum && structuredCircleData && (
                 <div className="list">
                   <label>
-                    Album name
+                    <div className="field-label">Album name</div>
                     <input
                       className="grow"
                       defaultValue={structuredAlbum}
@@ -433,8 +455,8 @@ export function App() {
                     />
                   </label>
 
-                  <div>
-                    <div>Album artists</div>
+                  <div className="field-group">
+                    <div className="field-label">Album artists</div>
                     <TagInput
                       value={selectedAlbum["album artists"]}
                       suggestions={Object.keys(editor.rewriting[structuredCircle]?.["all album artists"] ?? {})}
@@ -449,9 +471,6 @@ export function App() {
                   <div className="list" ref={discListRef}>
                     {selectedAlbum.discs.map((disc, discIndex) => (
                       <div className="card" key={`${discIndex}-${Object.keys(disc.tracks).join(":")}`}>
-                        <div className="track-header">
-                          <strong>Disc {discIndex + 1}</strong>
-                        </div>
                         <label>
                           Disc subtitle
                           <input
@@ -465,6 +484,20 @@ export function App() {
                               })
                             }
                           />
+                        </label>
+                        <label className="row row-tight">
+                          <input
+                            type="checkbox"
+                            checked={disc["$track numbers from order"] === true}
+                            onChange={(event) =>
+                              commitStructured((draft) => {
+                                draft.structured[structuredCircle].albums[structuredAlbum].discs[
+                                  discIndex
+                                ]["$track numbers from order"] = event.currentTarget.checked;
+                              })
+                            }
+                          />
+                          <span>Update track numbers from track order</span>
                         </label>
                         <DiscTrackList
                           disc={disc}
@@ -499,8 +532,8 @@ export function App() {
             </div>
           ) : (
             <div className="panel">
-              <h2>rewriting.json editor</h2>
-              <div className="row">
+              <h2>Rewrite Rules</h2>
+              <div className="toolbar">
                 <label>
                   Circle
                   <select value={rewritingCircle} onChange={(event) => setRewritingCircle(event.target.value)}>
@@ -535,10 +568,10 @@ export function App() {
                   Add rule
                 </button>
               </div>
-              <div className="split">
+              <div className="split rewrite-split">
                 <div className="card">
                   <h3>Names</h3>
-                  <div className="list">
+                  <div className="list names-list">
                     {getNamesForTarget(rewritingCircleData, rewritingTarget).map((name) => (
                       <div key={name}>{name}</div>
                     ))}
@@ -546,39 +579,35 @@ export function App() {
                 </div>
                 <div className="card">
                   <h3>Rules</h3>
-                  <div className="list" ref={rulesRef}>
+                  <div className="muted">
+                    Drag rule cards to reorder. In each rule, the first name list is `from` and the second
+                    list is `to`. You can drag names between the two lists.
+                  </div>
+                  <div className="list rules-list" ref={rulesRef}>
                     {rewritingRules.map((rule, index) => (
-                      <div className="card" key={`${index}-${rule.from.join("|")}-${rule.to.join("|")}`}>
-                        <div className="rule-header">
-                          <strong>Rule {index + 1}</strong>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              commitRewriting((draft) => {
-                                draft[rewritingCircle][rewritingTarget].splice(index, 1);
-                              })
-                            }
-                          >
-                            Remove
-                          </button>
-                        </div>
-                        <div className="muted">from</div>
-                        <TagInput
-                          value={rule.from}
+                      <div className="card rewrite-rule-card" key={`rule-${index}`}>
+                        {rule.from.length === 0 || rule.to.length === 0 ? (
+                          <div className="muted validation-hint">
+                            A rule needs at least one value in both `from` and `to`.
+                          </div>
+                        ) : null}
+                        {rewriteRuleDuplicateCounts.get(getRuleSignature(rule)) && rewriteRuleDuplicateCounts.get(getRuleSignature(rule))! > 1 ? (
+                          <div className="muted validation-hint">
+                            This rule duplicates another rule in the current target.
+                          </div>
+                        ) : null}
+                        <RuleEditor
+                          rule={rule}
+                          sortGroup={`rule-${index}`}
                           suggestions={getNamesForTarget(rewritingCircleData, rewritingTarget)}
-                          onCommit={(nextFrom) =>
+                          onRemove={() =>
                             commitRewriting((draft) => {
-                              draft[rewritingCircle][rewritingTarget][index].from = nextFrom;
+                              draft[rewritingCircle][rewritingTarget].splice(index, 1);
                             })
                           }
-                        />
-                        <div className="muted">to</div>
-                        <TagInput
-                          value={rule.to}
-                          suggestions={getNamesForTarget(rewritingCircleData, rewritingTarget)}
-                          onCommit={(nextTo) =>
+                          onChange={(nextRule) =>
                             commitRewriting((draft) => {
-                              draft[rewritingCircle][rewritingTarget][index].to = nextTo;
+                              draft[rewritingCircle][rewritingTarget][index] = nextRule;
                             })
                           }
                         />
@@ -591,7 +620,7 @@ export function App() {
           )}
           <div className="panel">
             <h2>Audit log</h2>
-            <div className="row">
+            <div className="row row-align-end">
               <label>
                 Filter
                 <select
@@ -606,18 +635,18 @@ export function App() {
                   ))}
                 </select>
               </label>
-              <button type="button" onClick={() => setAudits([])}>
+              <button type="button" onClick={() => setAuditLog({})}>
                 Clear log
               </button>
             </div>
             <div className="list audit-list">
-              {visibleAudits.map((entry, index) => (
-                <div className="card" key={`${entry.code}-${index}`}>
+              {visibleAuditLines.map((entry, index) => (
+                <div className="card" key={`${entry.code}-${index}-${entry.line}`}>
                   <div className="muted">{entry.code}</div>
-                  <div>{entry.message}</div>
+                  <div>{entry.line}</div>
                 </div>
               ))}
-              {visibleAudits.length === 0 ? <div className="muted">No audit entries.</div> : null}
+              {visibleAuditLines.length === 0 ? <div className="muted">No audit entries.</div> : null}
             </div>
           </div>
         </>
@@ -637,7 +666,7 @@ function TrackEditor(props: {
     <div className="card">
       <div className="muted">{trackPath}</div>
       <label>
-        Title
+        <div className="field-label">Title</div>
         <input
           defaultValue={track.title}
           onBlur={(event) => onCommit({ ...track, title: event.currentTarget.value })}
@@ -648,8 +677,8 @@ function TrackEditor(props: {
           }}
         />
       </label>
-      <div>
-        <div>Artists</div>
+      <div className="field-group">
+        <div className="field-label">Artists</div>
         <TagInput
           value={track.artists}
           suggestions={artistSuggestions}
@@ -658,27 +687,30 @@ function TrackEditor(props: {
       </div>
       <div className="row">
         <label>
-          Track number
+          <div className="field-label">Track number</div>
           <input
             type="number"
-            defaultValue={track["track number"]}
-            onBlur={(event) =>
+            defaultValue={track["track number"] ?? ""}
+            onBlur={(event) => {
+              const raw = event.currentTarget.value.trim();
+              const parsed = raw ? Number(raw) : undefined;
               onCommit({
                 ...track,
-                "track number": Number(event.currentTarget.value || track["track number"]),
-              })
-            }
+                "track number":
+                  parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
+              });
+            }}
           />
         </label>
         <label>
-          Date
+          <div className="field-label">Date</div>
           <input
             defaultValue={track.date ?? ""}
             onBlur={(event) => onCommit({ ...track, date: event.currentTarget.value || undefined })}
           />
         </label>
         <label>
-          Genre
+          <div className="field-label">Genre</div>
           <input
             defaultValue={track.genre ?? ""}
             onBlur={(event) => onCommit({ ...track, genre: event.currentTarget.value || undefined })}
@@ -701,34 +733,38 @@ function ImportPanel(props: {
   const structuredRef = useRef<HTMLInputElement | null>(null);
   const rewritingRef = useRef<HTMLInputElement | null>(null);
   return (
-    <div className="row">
-      <label>
-        metadata.json
-        <input ref={metadataRef} type="file" accept=".json" />
-      </label>
-      <label>
-        structured.json (optional)
-        <input ref={structuredRef} type="file" accept=".json" />
-      </label>
-      <label>
-        rewriting.json (optional)
-        <input ref={rewritingRef} type="file" accept=".json" />
-      </label>
-      <button
-        type="button"
-        onClick={() =>
-          props.onImport({
-            metadata: metadataRef.current?.files?.[0],
-            structured: structuredRef.current?.files?.[0],
-            rewriting: rewritingRef.current?.files?.[0],
-          })
-        }
-      >
-        Import
-      </button>
-      <button type="button" onClick={() => void props.onLoadDebugSample()}>
-        Load debug sample
-      </button>
+    <div className="list">
+      <div className="row">
+        <label>
+          metadata.json
+          <input ref={metadataRef} type="file" accept=".json" />
+        </label>
+        <label>
+          structured.json (optional)
+          <input ref={structuredRef} type="file" accept=".json" />
+        </label>
+        <label>
+          rewriting.json (optional)
+          <input ref={rewritingRef} type="file" accept=".json" />
+        </label>
+      </div>
+      <div className="row row-align-end">
+        <button
+          type="button"
+          onClick={() =>
+            props.onImport({
+              metadata: metadataRef.current?.files?.[0],
+              structured: structuredRef.current?.files?.[0],
+              rewriting: rewritingRef.current?.files?.[0],
+            })
+          }
+        >
+          Import
+        </button>
+        <button type="button" onClick={() => void props.onLoadDebugSample()}>
+          Load debug sample
+        </button>
+      </div>
     </div>
   );
 }
@@ -760,8 +796,22 @@ function reorderObjectByIndex<T>(
   return Object.fromEntries(entries);
 }
 
+function applyTrackNumbersByOrder(
+  tracks: Record<string, TrackStructured>,
+): Record<string, TrackStructured> {
+  return Object.fromEntries(
+    Object.entries(tracks).map(([trackPath, track], index) => [
+      trackPath,
+      { ...track, "track number": index + 1 },
+    ]),
+  );
+}
+
 function DiscTrackList(props: {
-  disc: { tracks: Record<string, TrackStructured> };
+  disc: {
+    "$track numbers from order"?: boolean;
+    tracks: Record<string, TrackStructured>;
+  };
   discIndex: number;
   structuredCircle: string;
   structuredAlbum: string;
@@ -797,7 +847,9 @@ function DiscTrackList(props: {
           const currentDisc = draft.structured[structuredCircle].albums[structuredAlbum].discs[
             discIndex
           ];
-          currentDisc.tracks = reorderObjectByIndex(currentDisc.tracks, oldIndex, newIndex);
+          const reorderedTracks = reorderObjectByIndex(currentDisc.tracks, oldIndex, newIndex);
+          currentDisc.tracks = applyTrackNumbersByOrder(reorderedTracks);
+          currentDisc["$track numbers from order"] = true;
         });
       },
     });
@@ -811,6 +863,12 @@ function DiscTrackList(props: {
 }
 
 export type { RewriteRule };
+
+function getRuleSignature(rule: RewriteRule): string {
+  const from = [...rule.from].map((item) => item.trim()).sort((a, b) => a.localeCompare(b));
+  const to = [...rule.to].map((item) => item.trim()).sort((a, b) => a.localeCompare(b));
+  return `${from.join("\u001f")}=>${to.join("\u001f")}`;
+}
 
 function createDebugMetadata(): Record<string, Record<string, unknown>> {
   return {
@@ -843,9 +901,198 @@ function createDebugMetadata(): Record<string, Record<string, unknown>> {
   };
 }
 
+function RuleEditor(props: {
+  rule: RewriteRule;
+  suggestions: string[];
+  sortGroup: string;
+  onRemove: () => void;
+  onChange: (next: RewriteRule) => void;
+}) {
+  const { rule, suggestions, sortGroup, onRemove, onChange } = props;
+  const [toDraft, setToDraft] = useState("");
+
+  const addToTag = (): void => {
+    const normalized = toDraft.trim();
+    if (!normalized) {
+      return;
+    }
+    onChange({ ...rule, to: [...rule.to, normalized] });
+    setToDraft("");
+  };
+
+  const moveTag = (
+    source: { side: "from" | "to"; index: number },
+    toSide: "from" | "to",
+  ): void => {
+    if (source.side === toSide) {
+      return;
+    }
+    if (source.side === "from") {
+      const value = rule.from[source.index];
+      if (!value) {
+        return;
+      }
+      onChange({
+        from: rule.from.filter((_, idx) => idx !== source.index),
+        to: [...rule.to, value],
+      });
+    } else {
+      const value = rule.to[source.index];
+      if (!value) {
+        return;
+      }
+      onChange({
+        from: [...rule.from, value],
+        to: rule.to.filter((_, idx) => idx !== source.index),
+      });
+    }
+  };
+
+  return (
+    <div className="rule-tag-editor">
+      <div
+        className="tag-chip-list"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          const payload = event.dataTransfer.getData("text/plain");
+          if (!payload) {
+            return;
+          }
+          const source = parseDragPayload(payload);
+          if (!source) {
+            return;
+          }
+          moveTag(source, "from");
+        }}
+      >
+        {rule.from.map((tag, index) => (
+          <span
+            className="tag-chip"
+            data-tag={tag}
+            draggable
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(
+                "text/plain",
+                JSON.stringify({ side: "from", index }),
+              );
+            }}
+            key={`${sortGroup}-from-${tag}-${index}`}
+          >
+            {tag}
+            <button
+              type="button"
+              className="tag-chip-remove"
+              onClick={() => onChange({ ...rule, from: rule.from.filter((_, i) => i !== index) })}
+            >
+              x
+            </button>
+          </span>
+        ))}
+      </div>
+      <div
+        className="tag-chip-list"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => {
+          event.preventDefault();
+          const payload = event.dataTransfer.getData("text/plain");
+          if (!payload) {
+            return;
+          }
+          const source = parseDragPayload(payload);
+          if (!source) {
+            return;
+          }
+          moveTag(source, "to");
+        }}
+      >
+        {rule.to.map((tag, index) => (
+          <span
+            className="tag-chip"
+            data-tag={tag}
+            draggable
+            onDragStart={(event) => {
+              event.dataTransfer.effectAllowed = "move";
+              event.dataTransfer.setData(
+                "text/plain",
+                JSON.stringify({ side: "to", index }),
+              );
+            }}
+            key={`${sortGroup}-to-${tag}-${index}`}
+          >
+            {tag}
+            <button
+              type="button"
+              className="tag-chip-remove"
+              onClick={() => onChange({ ...rule, to: rule.to.filter((_, i) => i !== index) })}
+            >
+              x
+            </button>
+          </span>
+        ))}
+      </div>
+      <div className="row rule-actions">
+        <input
+          list={`suggestions-${sortGroup}`}
+          value={toDraft}
+          placeholder="Add name..."
+          onChange={(event) => setToDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              addToTag();
+            }
+          }}
+        />
+        <button type="button" onClick={addToTag}>
+          Add name
+        </button>
+        <button type="button" className="rule-remove-button" onClick={onRemove}>
+          Remove
+        </button>
+      </div>
+      <datalist id={`suggestions-${sortGroup}`}>
+        {suggestions.map((item) => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
+    </div>
+  );
+}
+
+function parseDragPayload(
+  raw: string,
+): { side: "from" | "to"; index: number } | undefined {
+  try {
+    const parsed = JSON.parse(raw) as { side?: string; index?: number };
+    if ((parsed.side === "from" || parsed.side === "to") && typeof parsed.index === "number") {
+      return { side: parsed.side, index: parsed.index };
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 interface PersistedSession {
   state: EditorState;
-  audits: AuditEntry[];
+  audits: unknown;
+}
+
+function normalizeAuditLog(input: unknown): AuditLog {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return {};
+  }
+
+  const out: AuditLog = {};
+  for (const [code, lines] of Object.entries(input as Record<string, unknown>)) {
+    if (!Array.isArray(lines) || lines.some((line) => typeof line !== "string")) {
+      return {};
+    }
+    out[code] = lines as string[];
+  }
+  return out;
 }
 
 async function openDb(): Promise<IDBDatabase> {

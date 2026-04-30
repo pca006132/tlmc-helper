@@ -30,6 +30,29 @@ body {
   align-items: center;
 }
 
+.full-row {
+  width: 100%;
+}
+
+.row-tight {
+  gap: 8px;
+}
+
+.row-align-end {
+  align-items: end;
+}
+
+.toolbar {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: end;
+}
+
+.workspace-toolbar {
+  align-items: end;
+}
+
 .grow {
   flex: 1;
 }
@@ -38,7 +61,10 @@ input,
 select,
 button,
 textarea {
-  font: inherit;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.35;
   padding: 8px 10px;
   border: 1px solid #cfd6df;
   border-radius: 8px;
@@ -49,6 +75,10 @@ textarea {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 12px;
+}
+
+.rewrite-split {
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 
 .list {
@@ -63,9 +93,27 @@ textarea {
   background: #fff;
 }
 
+.compact-card {
+  padding: 8px 10px;
+}
+
 .muted {
   color: #666;
   font-size: 12px;
+}
+
+.field-label {
+  color: #4a5563;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  padding-top: 8px;
+}
+
+.field-group {
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
 }
 
 .track-header,
@@ -78,6 +126,11 @@ textarea {
 label {
   display: grid;
   gap: 6px;
+  min-width: 180px;
+  color: #4a5563;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
 }
 
 h2,
@@ -86,8 +139,87 @@ h3 {
 }
 
 .audit-list {
-  max-height: 220px;
+  max-height: 65vh;
   overflow: auto;
+  padding-right: 4px;
+}
+
+.rule-tag-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.rewrite-split .card {
+  display: grid;
+  gap: 10px;
+}
+
+.rewrite-rule-card {
+  gap: 8px;
+}
+
+.rule-actions {
+  align-items: center;
+}
+
+.rule-remove-button {
+  margin-left: auto;
+}
+
+.download-card {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.download-card .field-label {
+  padding-bottom: 8px;
+}
+
+.names-list,
+.rules-list {
+  max-height: 80vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.validation-hint {
+  color: #915f00;
+  background: #fff4d8;
+  border: 1px solid #f2d392;
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.tag-chip-list {
+  min-height: 40px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  border: 1px dashed #cfd6df;
+  border-radius: 8px;
+  padding: 6px;
+  align-items: center;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #eef3ff;
+  color: #1f3f75;
+  border: 1px solid #cddafe;
+  border-radius: 999px;
+  padding: 4px 8px;
+  cursor: move;
+}
+
+.tag-chip-remove {
+  border: none;
+  background: transparent;
+  color: #1f3f75;
+  padding: 0;
+  cursor: pointer;
 }
 
 .overlay {
@@ -111,5 +243,72 @@ h3 {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 980px) {
+  .split {
+    grid-template-columns: 1fr;
+  }
+
+  .app {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .panel {
+    padding: 12px;
+  }
+
+  .toolbar,
+  .row {
+    gap: 10px;
+  }
+
+  label {
+    min-width: 150px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app {
+    padding: 10px;
+    gap: 10px;
+  }
+
+  .panel {
+    padding: 10px;
+    border-radius: 8px;
+  }
+
+  .card {
+    padding: 8px;
+  }
+
+  .toolbar,
+  .row,
+  .list {
+    gap: 8px;
+  }
+
+  label {
+    min-width: 100%;
+  }
+
+  button {
+    padding: 7px 9px;
+  }
+
+  .compact-card {
+    width: 100%;
+  }
+
+  .download-card {
+    display: grid;
+    align-items: initial;
+  }
+
+  .download-card .field-label {
+    padding-bottom: 0;
   }
 }

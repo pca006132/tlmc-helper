@@ -6,13 +6,14 @@ export interface RewriteRule {
 export interface TrackStructured {
   title: string;
   date?: string;
-  "track number": number;
+  "track number"?: number;
   artists: string[];
   genre?: string;
 }
 
 export interface DiscStructured {
   $subtitle?: string;
+  "$track numbers from order"?: boolean;
   // track path -> track metadata
   tracks: Record<string, TrackStructured>;
 }

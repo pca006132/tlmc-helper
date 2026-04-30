@@ -32,7 +32,7 @@ checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 [[package]]
 name = "audiotags"
 version = "0.5.0"
-source = "git+https://github.com/pca006132/audiotags#ec3967a44254a797e3ea5b813f841e07dfafd279"
+source = "git+https://github.com/pca006132/audiotags#9f0b702f81b9b673bab8f300437ef35edc0de029"
 dependencies = [
  "audiotags-macro",
  "id3",
@@ -45,7 +45,7 @@ dependencies = [
 [[package]]
 name = "audiotags-macro"
 version = "0.2.0"
-source = "git+https://github.com/pca006132/audiotags#ec3967a44254a797e3ea5b813f841e07dfafd279"
+source = "git+https://github.com/pca006132/audiotags#9f0b702f81b9b673bab8f300437ef35edc0de029"
 
 [[package]]
 name = "bitflags"

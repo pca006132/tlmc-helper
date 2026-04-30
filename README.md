@@ -42,11 +42,11 @@ English: [README_EN.md](README_EN.md)
   - 可选首个记录号方括号：如 `[ABCD-1234]`
   - 日期和方括号都可省略；但目录名必须包含专辑名部分
 
-## 4 个程序分别做什么
+## 3 个 Rust 程序 + Web App 分别做什么
 
 - `split-album`：解包、配对 FLAC/CUE、分轨并写初始标签
 - `scan-albums`：扫描已有音频标签 -> `metadata.json`
-- `analyze-albums`：统一流程生成/更新 `structured.json` 和 `rewriting.json`，并始终生成 `update-metadata.json`
+- Web App：统一流程生成/更新 `structured.json`、`rewriting.json`，并生成 `update-metadata.json`
 - `apply-tags`：把 `update-metadata.json` 回写到音频文件
 
 ## Windows 用户：点击哪个 exe？
@@ -55,23 +55,20 @@ English: [README_EN.md](README_EN.md)
 
 1. `split-album.exe`（可选，如果你要从整轨+CUE分轨）
 2. `scan-albums.exe`
-3. `analyze-albums.exe`（首次会自动生成 `structured.json` / `rewriting.json` / `update-metadata.json`）
-4. 编辑 `structured.json` 和/或 `rewriting.json`
-5. `analyze-albums.exe`（刷新规则统计并重算 `update-metadata.json`）
+3. 打开 Web App（优先使用 GitHub Pages 部署版）
+4. 导入 `metadata.json`（可选再导入 `structured.json` / `rewriting.json`）
+5. 在界面中编辑并点击 `Sync now`，下载新的 `structured.json` / `rewriting.json` / `update-metadata.json`
 6. `apply-tags.exe`
 
 `.exe` 可以直接双击，不需要 `.bat`。  
 日志和审计都写文件（`verbose.log` / `audit.json`）。`error.log` 仅在出现错误时才会创建。
 
+GitHub Pages 地址：`https://pca006132.github.io/tlmc-helper/`（启用仓库 Pages 后可访问）
+
 ## 命令行方式（可选）
 
 ```bash
 cargo run --bin scan-albums
-cargo run --bin analyze-albums
-# 仅为指定社團生成 update-metadata.json（可传多个社團名）
-cargo run --bin analyze-albums "RD-Sounds" "TUMENECO"
-# 编辑 structured.json / rewriting.json
-cargo run --bin analyze-albums
 cargo run --bin apply-tags
 ```
 
@@ -80,13 +77,20 @@ cargo run --bin apply-tags
 - `metadata.json`：扫描得到的原始标签快照
 - `structured.json`：专辑/分盘/曲目结构主文件
 - `rewriting.json`：重写规则、默认流派、名字统计（给人和 LLM 看）
-- `update-metadata.json`：实际待写回的差异补丁（每次 `analyze-albums` 都会生成）
-  - 若 `analyze-albums` 传入社團名参数，则仅包含这些社團下的曲目补丁
+- `update-metadata.json`：实际待写回的差异补丁（每次 Web App `Sync now` 后生成）
 - `audit.json`：所有需要人工关注的问题
 - `verbose.log`：详细过程日志
 - `error.log`：硬错误（仅在有错误时存在）
 
-## `structured.json` 与 `rewriting.json` 怎么分工
+## 推荐流程（Web App 优先）
+
+1. `split-album`（需要分轨时）
+2. `scan-albums`
+3. 打开 Web App，导入并编辑，点击 `Sync now`
+4. 下载新的 `update-metadata.json`
+5. `apply-tags`
+
+## `structured.json` 与 `rewriting.json` 怎么分工（手动编辑时）
 
 - `structured.json`：只放结构和曲目编辑内容（专辑/盘/曲目字段）。
 - `rewriting.json`：只放重写与聚合信息：
@@ -110,6 +114,9 @@ cargo run --bin apply-tags
   - 必填：`title`、`track number`、`artists`
   - 可选：`date`、`genre`
 
+- 曲目标题归一化：轨道号为 `1` 时，`1 Name` / `01. Name` / `(01) Name` / `[01]-Name` 会归一化为 `Name`，并记录到 `audit.track_title_rewrite`。
+
+
 ## 重写工作流（非常重要）
 
 1. 先看每个社團下的：
@@ -117,7 +124,7 @@ cargo run --bin apply-tags
    - `rewriting.json` 里的 `all artists`
 2. 找出同一人/同一组合的不同写法、错别字、别名。
 3. 在 `rewriting.json` 里写规则统一这些名字。
-4. 再跑一次 `analyze-albums`。
+4. 在 Web App 里点一次 `Sync now`。
 5. 再看 `rewriting.json` 的聚合结果，确认不想要的旧写法是否还存在。
 
 如果还在，继续补 rewriting 规则并重复上面步骤。
@@ -152,12 +159,12 @@ cargo run --bin apply-tags
 
 如果规则存在这种“还可以继续改”的链，`audit.json` 里会有 `rewrite_chain_warning` 提示你检查。
 
-### 自动生成规则（analyze-albums）
+### 自动生成规则（Web App Sync）
 
-`analyze-albums` 会在缺少 `rewriting.json` 时自动生成一批初始规则，核心逻辑如下：
+Web App 在缺少 `rewriting.json` 时会自动生成一批初始规则，核心逻辑如下：
 
 1. 先做名字切分（split）：
-   - `analyze-albums` 不做 `;` / `\u0000` 这种二次分词；它直接使用 `metadata.json` 里的 artists / album artists 数组。
+   - Web App 不做 `;` / `\u0000` 这种二次分词；它直接使用 `metadata.json` 里的 artists / album artists 数组。
    - 再按常见连接符切分（如 `ft.`、`feat.`、` + `、` ＋ `、` x `、` & `、` ＆ `、` / `、` ／ `、` `vs.` / `vs`、`×`、`，`、`、`、`；`、`,` 等，括号外生效）。
 2. 再做名字归一化（normalization）：
    - 分三类规则，按顺序执行：
@@ -173,6 +180,11 @@ cargo run --bin apply-tags
    - 每次候选切分只有在至少一侧命中已知名字（归一化后）时才接受；
    - 未命中的另一侧若仍包含 aggressive 分隔符，会进入 worklist 继续尝试拆分。
 
+
+## Web
+
+- 新社團规则自动生成：已有 `rewriting.json` 时，出现新社團会自动生成该社團规则。
+
 ## 其他关键行为
 
 - `scan-albums` 读取多艺术家时把 `;` 当分隔符。
@@ -180,7 +192,7 @@ cargo run --bin apply-tags
   - 扫描时会把多值解析为数组；
   - 写回时会以多值标签形式写入（不是单字符串拼接）。
 - 盘号由 `structured.json` 的 `discs` 顺序自动推断（第 1 组是 Disc 1，以此类推）。
-- `analyze-albums` 的路径解析按固定层级处理：`circle/album/...`，第二层目录始终视为专辑目录。
+- Web App 的路径解析按固定层级处理：`circle/album/...`，第二层目录始终视为专辑目录。
 - 专辑目录名解析（regex）支持：
   - 可选日期前缀：`YYYY` / `YYYY.MM` / `YYYY.MM.DD`
   - 日期分隔符兼容 `.` 与 `-`（内部统一按 timestamp 语义处理）
@@ -190,7 +202,7 @@ cargo run --bin apply-tags
   - 若 metadata 缺失日期，且专辑目录可提取日期，则使用目录日期（保留原有精度，不补月/日）
   - 若 metadata 日期与目录日期一致但 metadata 精度更低，优先目录日期
   - 若不一致，保留 metadata，并写入 `audit.json.inconsistent_date`
-- `analyze-albums` 只有一个流程：
+- Web App `Sync now` 只有一个流程：
   - 若缺少 `structured.json`，先自动构建；
   - 若缺少 `rewriting.json`，先自动生成规则；
   - 若 `rewriting.json` 已存在，则保留其规则和 `default genre`，并刷新 `all artists` / `all album artists` / `all genres`。
@@ -229,7 +241,7 @@ cargo run --bin apply-tags
 - `rewrite_chain_warning`：重写规则可能存在链式不完整（单轮重写下可能改不彻底）。  
   处理：把链式规则扁平化，确保一步到目标写法。
 - `inconsistent_date`：metadata 日期与专辑目录推断日期不一致。  
-  处理：人工确认真实日期来源；若目录日期更可靠，修正 metadata 或结构化结果后重跑 `analyze-albums`。
+  处理：人工确认真实日期来源；若目录日期更可靠，修正 metadata 或结构化结果后在 Web App 再次 `Sync now`。
 
   示例（为什么不好）：
   ```json

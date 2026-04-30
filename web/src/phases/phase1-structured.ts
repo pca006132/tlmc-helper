@@ -111,21 +111,25 @@ export function buildStructuredFromMetadata(metadata: MetadataMap): BuildStructu
           const a = aggregateNamesForTrack(track.artists).names;
           aa.forEach((name) => albumAlbumArtists.add(name));
           albumArtistSets.add(aa.join("|"));
-          const trackNumber = assignByOrder ? idx + 1 : (track.trackNumber ?? 0);
+          const trackNumber = assignByOrder ? idx + 1 : track.trackNumber;
           const rewrittenTitle = rewriteTrackOnePrefixTitle(track.title, trackNumber);
           if (rewrittenTitle !== track.title) {
             audits.track_title_rewrite.add(albumPath);
           }
-          discTracks[track.path] = {
+          const nextTrack: TrackStructured = {
             title: rewrittenTitle ?? "",
             date: track.date ? timestampToDateString(track.date) : undefined,
-            "track number": trackNumber,
             artists: a,
             genre: track.genre,
           };
+          if (trackNumber !== undefined) {
+            nextTrack["track number"] = trackNumber;
+          }
+          discTracks[track.path] = nextTrack;
         }
         albumOut.discs.push({
           $subtitle: explicitSubtitle ?? (discCount > 1 ? derivedSubtitle : undefined),
+          "$track numbers from order": false,
           tracks: discTracks,
         });
       }
@@ -292,7 +296,7 @@ function nonEmpty(value: string | undefined): string | undefined {
 
 function rewriteTrackOnePrefixTitle(
   title: string | undefined,
-  trackNumber: number,
+  trackNumber: number | undefined,
 ): string | undefined {
   if (!title || trackNumber !== 1) {
     return title;

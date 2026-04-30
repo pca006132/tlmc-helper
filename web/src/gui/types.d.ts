@@ -6,7 +6,12 @@ declare module "sortablejs" {
 
   export interface SortableOptions {
     animation?: number;
+    group?: string;
+    handle?: string;
+    onStart?: (event: SortableEvent) => void;
     onEnd?: (event: SortableEvent) => void;
+    onAdd?: (event: SortableEvent) => void;
+    onRemove?: (event: SortableEvent) => void;
   }
 
   export default class Sortable {

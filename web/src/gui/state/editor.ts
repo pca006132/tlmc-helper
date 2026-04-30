@@ -17,6 +17,7 @@ export interface AuditEntry {
   code: string;
   message: string;
 }
+export type AuditLog = Record<string, string[]>;
 
 const logger = new NoopLogger();
 
@@ -24,19 +25,27 @@ export function initializeEditorState(
   metadata: MetadataMap,
   structured?: StructuredData,
   rewriting?: RewritingData,
-): EditorState {
+): { state: EditorState; audits: AuditLog } {
+  const auditLogger = new CollectingLogger();
   const phase1 = runPhase1(
-    { metadata, existingStructured: structured, existingRewriting: rewriting },
-    logger,
+    {
+      metadata,
+      existingStructured: structured,
+      existingRewriting: rewriting,
+    },
+    auditLogger,
   );
   return {
-    metadata,
-    structured: phase1.structured,
-    rewriting: phase1.rewriting,
+    state: {
+      metadata,
+      structured: phase1.structured,
+      rewriting: phase1.rewriting,
+    },
+    audits: auditLogger.auditLog,
   };
 }
 
-export function syncEditorState(state: EditorState): { state: EditorState; audits: AuditEntry[] } {
+export function syncEditorState(state: EditorState): { state: EditorState; audits: AuditLog } {
   const auditLogger = new CollectingLogger();
   const phase1 = runPhase1(
     {
@@ -52,7 +61,7 @@ export function syncEditorState(state: EditorState): { state: EditorState; audit
       structured: phase1.structured,
       rewriting: phase1.rewriting,
     },
-    audits: auditLogger.auditEntries,
+    audits: auditLogger.auditLog,
   };
 }
 
@@ -64,11 +73,14 @@ export function computeUpdates(state: EditorState): UpdateMap {
 }
 
 class CollectingLogger extends NoopLogger {
-  public readonly auditEntries: AuditEntry[] = [];
+  public readonly auditLog: AuditLog = {};
 
   public override log(entry: { level: string; code: string; message: string }): void {
     if (entry.level === "audit") {
-      this.auditEntries.push({ code: entry.code, message: entry.message });
+      const lines = (this.auditLog[entry.code] ??= []);
+      if (!lines.includes(entry.message)) {
+        lines.push(entry.message);
+      }
     }
   }
 }

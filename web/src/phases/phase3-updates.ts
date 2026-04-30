@@ -96,7 +96,8 @@ export function materializeMetadataFromStructured(
       for (const [discIdx, disc] of albumData.discs.entries()) {
         const discNo = discIdx + 1;
         const totalTracks = Object.keys(disc.tracks).length;
-        for (const [trackPath, track] of Object.entries(disc.tracks)) {
+        const useTrackOrder = disc["$track numbers from order"] === true;
+        for (const [trackIndex, [trackPath, track]] of Object.entries(disc.tracks).entries()) {
           const base = basis[trackPath] ?? {};
           const model: MetadataTrack = {};
           model.Title = track.title;
@@ -109,7 +110,11 @@ export function materializeMetadataFromStructured(
           if (disc.$subtitle) {
             model["Disc subtitle"] = disc.$subtitle;
           }
-          model["Track number"] = track["track number"];
+          if (useTrackOrder) {
+            model["Track number"] = trackIndex + 1;
+          } else if (track["track number"] !== undefined) {
+            model["Track number"] = track["track number"];
+          }
           model["Total tracks"] = totalTracks;
           model.Artists = [...track.artists];
           if (track.genre) {
@@ -172,6 +177,9 @@ export function overlayTrackDataFromOld(
               newDisc.tracks[trackPath] = structuredClone(oldTrack);
               if (oldDisc.$subtitle) {
                 newDisc.$subtitle = oldDisc.$subtitle;
+              }
+              if (oldDisc["$track numbers from order"] !== undefined) {
+                newDisc["$track numbers from order"] = oldDisc["$track numbers from order"];
               }
               break;
             }

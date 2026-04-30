@@ -26,6 +26,7 @@
   - `track number`
   - `date`
   - `genre`
+- Section title in UI: `Album Metadata`.
 
 ## Rewriting view
 
@@ -37,7 +38,16 @@
 - Left panel shows names for the selected target type.
 - Right panel shows sortable rules.
 - Rules can be added and removed.
-- Each rule has `from` and `to` Tagify rows.
+- Section title in UI: `Rewrite Rules`.
+- Rules UI is intentionally compact:
+  - each rule has two chip lists (first = `from`, second = `to`)
+  - names can be dragged between those two lists
+  - each rule has one `Add name` input/button that appends to `to`
+  - users can move newly added names to `from` by drag-and-drop
+  - per-rule `Remove` action is in the action row
+- Rules panel guidance text explains ordering and drag behavior.
+- `Names` and `Rules` panes are independently scrollable (max height `80vh`).
+- On narrow layouts, `Names` and `Rules` stack vertically.
 - `default genre` is intentionally not exposed in UI for now.
 
 ## Sync behavior
@@ -49,7 +59,7 @@
 
 ## Persistence
 
-- Current `metadata`, `structured`, `rewriting`, and audit entries are stored in local storage.
+- Current `metadata`, `structured`, `rewriting`, and audit entries are stored in IndexedDB.
 - Session is restored automatically on page reload.
 
 ## Audit log panel
@@ -57,3 +67,4 @@
 - Audit entries are shown below the main editor.
 - Filter by audit code with dropdown.
 - Clear log button removes current entries.
+- Panel is scrollable with viewport-relative height (`65vh`) for better visibility.

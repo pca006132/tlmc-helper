@@ -48,6 +48,5 @@ jobs:
           path: |
             target/release/split-album.exe
             target/release/scan-albums.exe
-            target/release/analyze-albums.exe
             target/release/apply-tags.exe
             target/release/*.dll
