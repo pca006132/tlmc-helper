@@ -1,7 +1,7 @@
 import {
   computeUpdates,
   initializeEditorState,
-  syncEditorState,
+  syncStructuredAndRewriting,
   type AuditLog,
   type EditorState,
 } from "./editor.js";
@@ -18,7 +18,8 @@ type WorkerRequest =
   | {
       id: number;
       type: "sync";
-      state: EditorState;
+      structured: StructuredData;
+      rewriting: RewritingData;
     }
   | {
       id: number;
@@ -28,7 +29,14 @@ type WorkerRequest =
 
 type WorkerResponse =
   | { id: number; ok: true; type: "import"; state: EditorState; audits: AuditLog }
-  | { id: number; ok: true; type: "sync"; state: EditorState; audits: AuditLog }
+  | {
+      id: number;
+      ok: true;
+      type: "sync";
+      structured: StructuredData;
+      rewriting: RewritingData;
+      audits: AuditLog;
+    }
   | { id: number; ok: true; type: "compute-updates"; updates: unknown }
   | { id: number; ok: false; error: string };
 
@@ -54,12 +62,13 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       return;
     }
     if (request.type === "sync") {
-      const synced = syncEditorState(request.state);
+      const synced = syncStructuredAndRewriting(request.structured, request.rewriting);
       post({
         id: request.id,
         ok: true,
         type: "sync",
-        state: synced.state,
+        structured: synced.structured,
+        rewriting: synced.rewriting,
         audits: synced.audits,
       });
       return;

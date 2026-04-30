@@ -1,9 +1,16 @@
-import { dedupPreserve, dedupSorted, normalizeName } from "./name-utils.js";
+import {
+  dedupPreserve,
+  dedupSorted,
+  normalizeNameCjk,
+  normalizeNameLight,
+} from "./name-utils.js";
 import type { RewriteRule } from "../domain/models.js";
 
 const PAREN_MAP = new Map<string, number>([
   ["(", 1],
   [")", -1],
+  ["（", 1],
+  ["）", -1],
   ["[", 1],
   ["]", -1],
   ["【", 1],
@@ -35,15 +42,45 @@ const NORMAL_SPLIT_SEPARATORS = [
 ];
 const AGGRESSIVE_SYMBOL_SEPARATORS = ["&", "＆", "/", "／", "+", "＋"];
 
-const HIGH_CONFIDENCE_REGEX = [/^\s*vo\.\s*(.+?)\s*$/i];
-const LOW_CONFIDENCE_REGEX = [
-  /^\s*.+?\s*[\(（]\s*cv\s*[:：]\s*(.+?)\s*[\)）]\s*$/i,
-  /^\s*(.+?)\s*[\(（\[【〔]\s*.+?\s*[\)）\]】〕]\s*$/,
+const HIGH_CONFIDENCE_REGEX = [/^\s*(?:vo\.?|vocal:?|vocals:?)\s*(.+?)\s*$/i];
+const LOW_CONFIDENCE_REGEX_RULES: CaptureRegexRule[] = [
+  {
+    regex:
+      /^\s*(?<role>arr\.?|arrange|arranger|lyr\.?|lyrics?|compose|composer|comp\.?|music|guitar|gt\.?|bass|ba\.?|drums|dr\.?|piano|pf\.?|keyboard|key\.?|mix|mastering|illustration|illust|design)\s*[:：.]?\s*(?<name>.+?)\s*$/i,
+    groups: ["name", "role"],
+  },
+  {
+    regex:
+      /^\s*(?<role>.+?)\s*[\(（]\s*cv\s*[:：]\s*(?<cv>.+?)\s*[\)）]\s*$/i,
+    groups: ["cv", "role"],
+  },
+  {
+    regex:
+      /^\s*(?<name>.+?)\s*[\(（\[【〔]\s*(?<affiliation>.+?)\s*[\)）\]】〕]\s*$/,
+    groups: ["name", "affiliation"],
+  },
 ];
+
+export class RewriteCycleError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = "RewriteCycleError";
+  }
+}
 
 interface ScoredRule {
   rule: RewriteRule;
   confident: boolean;
+}
+
+interface CaptureRegexRule {
+  regex: RegExp;
+  groups: string[];
+}
+
+export interface NormalizeContext {
+  preload(values: Iterable<string>): void;
+  normalize(value: string): string;
 }
 
 export interface NameAggregation {
@@ -51,12 +88,9 @@ export interface NameAggregation {
   splitRules: RewriteRule[];
 }
 
-export function knownCircleNames(
-  artists: string[],
-  albumArtists: string[],
-): Set<string> {
+export function knownNamesFromValues(values: string[]): Set<string> {
   return new Set(
-    [...artists, ...albumArtists].map((v) => v.trim()).filter((v) => v.length > 0),
+    values.map((v) => v.trim()).filter((v) => v.length > 0),
   );
 }
 
@@ -113,8 +147,15 @@ export function generateSplitStageOutput(
   rawNames: string[],
   normalSplitRules: RewriteRule[],
   knownNames: Set<string>,
+  normalize: NormalizeContext = createNormalizeContext(),
 ): [RewriteRule[], string[]] {
-  const splitRules = stage1GenerateSplitRules(rawNames, normalSplitRules, knownNames);
+  normalize.preload([...rawNames, ...knownNames]);
+  const splitRules = stage1GenerateSplitRules(
+    rawNames,
+    normalSplitRules,
+    knownNames,
+    normalize,
+  );
   const splitRewrittenNames = rewriteNameValues(rawNames, splitRules);
   return [splitRules, splitRewrittenNames];
 }
@@ -124,13 +165,21 @@ export function generateCompiledNameRules(
   splitRules: RewriteRule[],
   splitRewrittenNames: string[],
   splitNameCounts: Record<string, number>,
-  maxIter: number,
+  knownNames: Set<string>,
+  normalize: NormalizeContext = createNormalizeContext(),
 ): RewriteRule[] {
+  normalize.preload([...rawNames, ...splitRewrittenNames, ...knownNames]);
   const normalizeRules = stage2GenerateNormalizeRules(
     splitRewrittenNames,
     splitNameCounts,
+    knownNames,
+    normalize,
   );
-  return stage3CompileOnePassRules(normalizeRules, splitRules, rawNames, maxIter);
+  const saturated = saturateGeneratedRules(dedupRewriteRules([...normalizeRules, ...splitRules]));
+  return retainGeneratedRulesWithReachableMatches(
+    saturated,
+    rawNames,
+  );
 }
 
 export function splitCandidates(value: string): string[] {
@@ -149,22 +198,25 @@ export function rewriteNames(input: string[], rules: RewriteRule[]): string[] {
   if (input.length === 0) {
     return input;
   }
-  const out: string[] = [];
-  for (const name of input) {
-    const match = rules.find((rule) => rule.from.includes(name));
-    if (match) {
-      out.push(...match.to);
-    } else {
-      out.push(name);
-    }
+  const lookup = compileRewriteLookup(rules);
+  return rewriteNamesWithLookup(input, lookup);
+}
+
+export function rewriteNamesWithLookup(
+  input: string[],
+  lookup: Map<string, string[]>,
+): string[] {
+  if (input.length === 0) {
+    return input;
   }
-  return dedupPreserve(out);
+  return rewriteNamesOnce(dedupPreserve(input), lookup);
 }
 
 function rewriteNameValues(values: string[], rules: RewriteRule[]): string[] {
   const out: string[] = [];
+  const lookup = compileRewriteLookup(rules);
   for (const value of values) {
-    out.push(...rewriteNames([value], rules));
+    out.push(...rewriteNamesWithLookup([value], lookup));
   }
   return dedupSorted(out);
 }
@@ -173,87 +225,114 @@ function stage1GenerateSplitRules(
   rawNames: string[],
   normalSplitRules: RewriteRule[],
   knownNames: Set<string>,
+  normalize: NormalizeContext,
 ): RewriteRule[] {
-  const aggressiveRules = buildAggressiveSplitRules(rawNames, knownNames);
+  const aggressiveRules = buildAggressiveSplitRules(rawNames, knownNames, normalize);
   const merged = dedupRewriteRules([...normalSplitRules, ...aggressiveRules]);
-  return orderSplitRulesByConfidence(scoreSplitRuleConfidence(merged, knownNames));
+  return orderSplitRulesByConfidence(scoreSplitRuleConfidence(merged, knownNames, normalize));
 }
 
 function stage2GenerateNormalizeRules(
   splitRewrittenNames: string[],
   splitNameCounts: Record<string, number>,
+  knownNames: Set<string>,
+  normalize: NormalizeContext,
 ): RewriteRule[] {
-  const low = buildRegexCaptureRules(splitRewrittenNames, LOW_CONFIDENCE_REGEX);
+  const low = buildLowConfidenceRegexCaptureRules(
+    splitRewrittenNames,
+    LOW_CONFIDENCE_REGEX_RULES,
+    knownNames,
+    normalize,
+  );
   const high = buildRegexCaptureRules(splitRewrittenNames, HIGH_CONFIDENCE_REGEX);
-  const simple = buildSimpleNormalizeRules(splitRewrittenNames, splitNameCounts);
+  const simple = buildSimpleNormalizeRules(splitRewrittenNames, splitNameCounts, normalize);
   return dedupRewriteRules([...low, ...high, ...simple]);
 }
 
-function stage3CompileOnePassRules(
-  normalizeRules: RewriteRule[],
-  splitRules: RewriteRule[],
-  rawNames: string[],
-  maxIter: number,
-): RewriteRule[] {
-  const merged = dedupRewriteRules([...normalizeRules, ...splitRules]);
-  const compiled = saturateGeneratedRules(merged, maxIter);
-  return retainGeneratedRulesWithReachableMatches(compiled, rawNames, maxIter);
-}
-
-function saturateGeneratedRules(rules: RewriteRule[], maxIter: number): RewriteRule[] {
-  let out = dedupRewriteRules(rules);
-  for (let i = 0; i < maxIter; i += 1) {
-    const snapshot = out.map(cloneRule);
-    let changed = false;
-    out = out.map((rule) => {
-      let current = [...rule.to];
-      const seen = new Set<string>([JSON.stringify(current)]);
-      for (let j = 0; j < maxIter; j += 1) {
-        const next = rewriteTokensAndSplit(current, snapshot);
-        const hash = JSON.stringify(next);
-        if (eq(next, current) || seen.has(hash)) {
-          break;
-        }
-        seen.add(hash);
-        current = next;
-      }
-      if (!eq(current, rule.to)) {
-        changed = true;
-      }
-      return { ...rule, to: current };
-    });
-    out = dedupRewriteRules(out);
-    if (!changed) {
-      break;
-    }
-  }
-  return out;
-}
-
-function rewriteTokensAndSplit(input: string[], rules: RewriteRule[]): string[] {
+function rewriteTokensAndSplitWithLookup(
+  input: string[],
+  lookup: Map<string, string[]>,
+): string[] {
   const out: string[] = [];
   for (const name of input) {
     for (const token of splitCandidates(name)) {
-      const match = rules.find((rule) => rule.from.includes(token));
-      if (match) {
-        out.push(...match.to);
-      } else {
-        out.push(token);
-      }
+      out.push(...rewriteNamesWithLookup([token], lookup));
     }
   }
   return dedupPreserve(out);
 }
 
+export function compileRewriteLookup(rules: RewriteRule[]): Map<string, string[]> {
+  const direct = new Map<string, string[]>();
+  for (const rule of rules) {
+    for (const from of rule.from) {
+      if (!direct.has(from)) {
+        direct.set(from, rule.to);
+      }
+    }
+  }
+  const lookup = new Map<string, string[]>();
+  for (const from of direct.keys()) {
+    lookup.set(from, resolveRewriteValue(from, direct, []));
+  }
+  return lookup;
+}
+
+function resolveRewriteValue(
+  value: string,
+  direct: Map<string, string[]>,
+  stack: string[],
+): string[] {
+  const next = direct.get(value);
+  if (!next) {
+    return [value];
+  }
+  if (stack.includes(value)) {
+    throw new RewriteCycleError(
+      `rewrite cycle while compiling rules: ${[...stack, value].join(" -> ")}`,
+    );
+  }
+  const out: string[] = [];
+  for (const item of next) {
+    out.push(...resolveRewriteValue(item, direct, [...stack, value]));
+  }
+  return dedupPreserve(out);
+}
+
+function rewriteNamesOnce(input: string[], lookup: Map<string, string[]>): string[] {
+  const out: string[] = [];
+  for (const name of input) {
+    const replacement = lookup.get(name);
+    if (replacement) {
+      out.push(...replacement);
+    } else {
+      out.push(name);
+    }
+  }
+  return dedupPreserve(out);
+}
+
+function saturateGeneratedRules(rules: RewriteRule[]): RewriteRule[] {
+  const snapshot = dedupRewriteRules(rules);
+  const lookup = compileRewriteLookup(snapshot);
+  return dedupRewriteRules(
+    snapshot.map((rule) => ({
+      ...rule,
+      to: rewriteTokensAndSplitWithLookup(rule.to, lookup),
+    })),
+  );
+}
+
 function scoreSplitRuleConfidence(
   rules: RewriteRule[],
   knownNames: Set<string>,
+  normalize: NormalizeContext,
 ): ScoredRule[] {
-  const knownNorm = new Set([...knownNames].map((v) => normalizeName(v)));
+  const knownNorm = new Set([...knownNames].map((v) => normalize.normalize(v)));
   return rules.map((rule) => {
-    const fromNorm = new Set(rule.from.map((v) => normalizeName(v)));
+    const fromNorm = new Set(rule.from.map((v) => normalize.normalize(v)));
     const confident = rule.to.some((to) => {
-      const toNorm = normalizeName(to);
+      const toNorm = normalize.normalize(to);
       return knownNorm.has(toNorm) && !fromNorm.has(toNorm);
     });
     return { rule, confident };
@@ -266,9 +345,13 @@ function orderSplitRulesByConfidence(rules: ScoredRule[]): RewriteRule[] {
     .map((item) => item.rule);
 }
 
-function buildAggressiveSplitRules(values: string[], known: Set<string>): RewriteRule[] {
+function buildAggressiveSplitRules(
+  values: string[],
+  known: Set<string>,
+  normalize: NormalizeContext,
+): RewriteRule[] {
   const out: RewriteRule[] = [];
-  const knownNorm = new Set([...known].map((value) => normalizeName(value)));
+  const knownNorm = new Set([...known].map((value) => normalize.normalize(value)));
   for (const current of values.map((v) => v.trim()).filter((v) => v.length > 0)) {
     const worklist = [current];
     const finalParts: string[] = [];
@@ -286,12 +369,12 @@ function buildAggressiveSplitRules(values: string[], known: Set<string>): Rewrit
             break;
           }
           const [left, right, nextOffset] = split;
-          const leftSeen = knownNorm.has(normalizeName(left));
-          const rightSeen = knownNorm.has(normalizeName(right));
+          const leftSeen = knownNorm.has(normalize.normalize(left));
+          const rightSeen = knownNorm.has(normalize.normalize(right));
           if (leftSeen || rightSeen) {
             done = true;
             for (const part of [left, right]) {
-              const partSeen = knownNorm.has(normalizeName(part));
+              const partSeen = knownNorm.has(normalize.normalize(part));
               if (!partSeen && containsAggressiveSeparator(part)) {
                 worklist.push(part);
               } else {
@@ -382,10 +465,11 @@ function containsAggressiveSeparator(value: string): boolean {
 function buildSimpleNormalizeRules(
   values: string[],
   counts: Record<string, number>,
+  normalize: NormalizeContext,
 ): RewriteRule[] {
   const byNorm = new Map<string, Set<string>>();
   for (const value of values) {
-    const norm = normalizeName(value);
+    const norm = normalize.normalize(value);
     if (!byNorm.has(norm)) {
       byNorm.set(norm, new Set<string>());
     }
@@ -434,17 +518,83 @@ function buildRegexCaptureRules(values: string[], regexes: RegExp[]): RewriteRul
   return out;
 }
 
+function buildLowConfidenceRegexCaptureRules(
+  values: string[],
+  rules: CaptureRegexRule[],
+  knownNames: Set<string>,
+  normalize: NormalizeContext,
+): RewriteRule[] {
+  const out: RewriteRule[] = [];
+  const knownNorm = new Set([...knownNames].map((name) => normalize.normalize(name)));
+  for (const value of values) {
+    const source = value.trim();
+    if (!source) {
+      continue;
+    }
+    for (const rule of rules) {
+      const match = rule.regex.exec(source);
+      if (!match?.groups) {
+        continue;
+      }
+      const target = rule.groups
+        .flatMap((group, index) => {
+          const target = match.groups?.[group]?.trim();
+          return target && target !== source
+            ? [{ target, groupIndex: index, known: knownNorm.has(normalize.normalize(target)) }]
+            : [];
+        })
+        .sort((a, b) => Number(b.known) - Number(a.known) || a.groupIndex - b.groupIndex)
+        .map((candidate) => candidate.target)[0];
+      if (target) {
+        out.push({ from: [source], to: [target] });
+      }
+      break;
+    }
+  }
+  return out;
+}
+
+export function createNormalizeContext(): NormalizeContext {
+  const cjkCache = new Map<string, string>();
+  const normalizedCache = new Map<string, string>();
+  function cjk(value: string): string {
+    const cached = cjkCache.get(value);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const converted = normalizeNameCjk(value);
+    cjkCache.set(value, converted);
+    return converted;
+  }
+  return {
+    preload(values: Iterable<string>): void {
+      for (const value of values) {
+        cjk(value);
+      }
+    },
+    normalize(value: string): string {
+      const cached = normalizedCache.get(value);
+      if (cached !== undefined) {
+        return cached;
+      }
+      const normalized = normalizeNameLight(cjk(value));
+      normalizedCache.set(value, normalized);
+      return normalized;
+    },
+  };
+}
+
 function retainGeneratedRulesWithReachableMatches(
   rules: RewriteRule[],
   values: string[],
-  maxIter: number,
 ): RewriteRule[] {
   const reachable = new Set(values.map((v) => v.trim()).filter((v) => v.length > 0));
+  const lookup = compileRewriteLookup(rules);
   let frontier = [...reachable];
-  for (let i = 0; i < maxIter; i += 1) {
+  while (frontier.length > 0) {
     const nextFrontier: string[] = [];
     for (const name of frontier) {
-      const rewritten = rewriteTokensAndSplit([name], rules);
+      const rewritten = rewriteTokensAndSplitWithLookup([name], lookup);
       for (const token of rewritten) {
         if (!reachable.has(token)) {
           reachable.add(token);
@@ -469,10 +619,6 @@ function sameNameSet(a: string[], b: string[]): boolean {
   const sa = [...a].sort();
   const sb = [...b].sort();
   return eq(sa, sb);
-}
-
-function cloneRule(rule: RewriteRule): RewriteRule {
-  return { from: [...rule.from], to: [...rule.to] };
 }
 
 function eq(a: string[], b: string[]): boolean {

@@ -1,5 +1,4 @@
-import { parseTrackPath } from "../core/path-parse.js";
-import { rewriteNames } from "../core/rule-generation.js";
+import { compileRewriteLookup } from "../core/rule-generation.js";
 import type {
   MetadataMap,
   MetadataTrack,
@@ -7,11 +6,9 @@ import type {
   StructuredData,
   UpdateMap,
 } from "../domain/models.js";
-import { buildStructuredFromMetadata, getList, getString } from "./phase1-structured.js";
 import {
   applyRewritesToStructured,
   chainRulesWithGlobal,
-  rewriteGenre,
 } from "./phase1-rewriting.js";
 
 export function runUpdateStage(
@@ -19,58 +16,10 @@ export function runUpdateStage(
   structuredData: StructuredData,
   rewritingData: RewritingData,
 ): UpdateMap {
-  const updatedMetadata: MetadataMap = {};
-  const allRewriting = rewritingData.$all;
-
-  for (const [trackPath, original] of Object.entries(metadata)) {
-    const entry = structuredClone(original);
-    const { circle } = parseTrackPath(trackPath);
-    const circleConfig = rewritingData[circle];
-    if (!circleConfig) {
-      updatedMetadata[trackPath] = entry;
-      continue;
-    }
-    const artistRules = chainRulesWithGlobal(
-      circleConfig["artists rewriting"],
-      allRewriting?.["artists rewriting"],
-    );
-    const albumArtistRules = chainRulesWithGlobal(
-      circleConfig["album artists rewriting"],
-      allRewriting?.["album artists rewriting"],
-    );
-    const genreRules = chainRulesWithGlobal(
-      circleConfig["genre rewriting"],
-      allRewriting?.["genre rewriting"],
-    );
-
-    const originalArtists = getList(original, "Artists");
-    const artists = rewriteNames(originalArtists, artistRules);
-    const originalAlbumArtists = getList(original, "Album artists");
-    const albumArtists = rewriteNames(originalAlbumArtists, albumArtistRules);
-    const originalGenre = getString(original, "Genre");
-    const genre = rewriteGenre(
-      originalGenre,
-      genreRules,
-      circleConfig["default genre"] ?? allRewriting?.["default genre"],
-    );
-
-    if (!eq(originalArtists, artists)) {
-      entry.Artists = artists;
-    }
-    if (!eq(originalAlbumArtists, albumArtists)) {
-      entry["Album artists"] = albumArtists;
-    }
-    if (genre !== originalGenre && genre !== undefined) {
-      entry.Genre = genre;
-    }
-    updatedMetadata[trackPath] = entry;
-  }
-
-  const { structured: structuredNew } = buildStructuredFromMetadata(updatedMetadata);
-  overlayTrackDataFromOld(structuredNew, structuredData);
-  applyRewritesToStructured(structuredNew, rewritingData);
-
-  const desired = materializeMetadataFromStructured(structuredNew, updatedMetadata);
+  const structured = structuredClone(structuredData);
+  applyRewritesToStructured(structured, rewritingData);
+  applyGenreRewritesToStructured(structured, rewritingData);
+  const desired = materializeMetadataFromStructured(structured, metadata);
   const updates: UpdateMap = {};
   for (const [trackPath, desiredFields] of Object.entries(desired)) {
     const originalFields = metadata[trackPath];
@@ -83,6 +32,35 @@ export function runUpdateStage(
     }
   }
   return updates;
+}
+
+function applyGenreRewritesToStructured(
+  structured: StructuredData,
+  rewriting: RewritingData,
+): void {
+  const allRewriting = rewriting.$all;
+  for (const [circleName, circle] of Object.entries(structured)) {
+    const circleRules = rewriting[circleName];
+    if (!circleRules) {
+      continue;
+    }
+    const genreRules = chainRulesWithGlobal(
+      circleRules["genre rewriting"],
+      allRewriting?.["genre rewriting"],
+    );
+    const genreLookup = compileRewriteLookup(genreRules);
+    for (const album of Object.values(circle.albums)) {
+      for (const disc of album.discs) {
+        for (const track of Object.values(disc.tracks)) {
+          const initial =
+            track.genre ?? circleRules["default genre"] ?? allRewriting?.["default genre"];
+          if (initial) {
+            track.genre = genreLookup.get(initial)?.[0] ?? initial;
+          }
+        }
+      }
+    }
+  }
 }
 
 export function materializeMetadataFromStructured(
@@ -154,44 +132,6 @@ export function diffTrackMetadata(
     }
   }
   return patch;
-}
-
-export function overlayTrackDataFromOld(
-  structuredNew: StructuredData,
-  structuredOld: StructuredData,
-): void {
-  for (const [circleName, oldCircle] of Object.entries(structuredOld)) {
-    const newCircle = structuredNew[circleName];
-    if (!newCircle) {
-      continue;
-    }
-    for (const [albumName, oldAlbum] of Object.entries(oldCircle.albums)) {
-      const newAlbum = newCircle.albums[albumName];
-      if (!newAlbum) {
-        continue;
-      }
-      for (const oldDisc of oldAlbum.discs) {
-        for (const [trackPath, oldTrack] of Object.entries(oldDisc.tracks)) {
-          for (const newDisc of newAlbum.discs) {
-            if (newDisc.tracks[trackPath]) {
-              newDisc.tracks[trackPath] = structuredClone(oldTrack);
-              if (oldDisc.$subtitle) {
-                newDisc.$subtitle = oldDisc.$subtitle;
-              }
-              if (oldDisc["$track numbers from order"] !== undefined) {
-                newDisc["$track numbers from order"] = oldDisc["$track numbers from order"];
-              }
-              break;
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-function eq(a: string[], b: string[]): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 function valueEq(a: unknown, b: unknown): boolean {

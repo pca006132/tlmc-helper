@@ -1,7 +1,4 @@
 import {
-  aggregateNamesForTrack,
-} from "../core/rule-generation.js";
-import {
   parseTimestampValue,
   parseTrackPath,
   timestampPrecisionLevel,
@@ -20,6 +17,8 @@ import type {
   TrackStructured,
 } from "../domain/models.js";
 import type { AnalyzeLogger } from "../core/logger.js";
+
+const TRACK_NUMBER_PREFIX_RE = /^\s*(?:\(?\[?)0*(\d+)(?:\)|\])?\s*(?:[.-]\s*)?(.+?)\s*$/;
 
 interface CircleData {
   albums: Record<string, { tracks: TrackLite[] }>;
@@ -107,12 +106,12 @@ export function buildStructuredFromMetadata(metadata: MetadataMap): BuildStructu
           if (track.artists.length === 0) {
             audits.missing_info.add(albumPath);
           }
-          const aa = aggregateNamesForTrack(track.albumArtists).names;
-          const a = aggregateNamesForTrack(track.artists).names;
+          const aa = cleanNames(track.albumArtists);
+          const a = cleanNames(track.artists);
           aa.forEach((name) => albumAlbumArtists.add(name));
           albumArtistSets.add(aa.join("|"));
           const trackNumber = assignByOrder ? idx + 1 : track.trackNumber;
-          const rewrittenTitle = rewriteTrackOnePrefixTitle(track.title, trackNumber);
+          const rewrittenTitle = rewriteTrackNumberPrefixTitle(track.title, trackNumber);
           if (rewrittenTitle !== track.title) {
             audits.track_title_rewrite.add(albumPath);
           }
@@ -294,19 +293,32 @@ function nonEmpty(value: string | undefined): string | undefined {
   return trimmed || undefined;
 }
 
-function rewriteTrackOnePrefixTitle(
+function rewriteTrackNumberPrefixTitle(
   title: string | undefined,
   trackNumber: number | undefined,
 ): string | undefined {
-  if (!title || trackNumber !== 1) {
+  if (!title || trackNumber === undefined) {
     return title;
   }
-  const match = /^\s*(?:\(?\[?)0*1(?:\)|\])?\s*(?:[.-]\s*)?(.+?)\s*$/.exec(title);
-  if (!match) {
+  const match = TRACK_NUMBER_PREFIX_RE.exec(title);
+  if (!match || Number(match[1]) !== trackNumber) {
     return title;
   }
-  const rewritten = match[1]?.trim();
+  const rewritten = match[2]?.trim();
   return rewritten && rewritten.length > 0 ? rewritten : title;
+}
+
+function cleanNames(values: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+  }
+  return out;
 }
 
 export function getString(track: MetadataTrack, key: string): string | undefined {

@@ -85,10 +85,12 @@ function main(): void {
       : phase3.updates;
     writeJsonFile(path.join(execDir, "update-metadata.json"), filtered);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(message);
     logger.log({
       level: "error",
       code: "fatal",
-      message: error instanceof Error ? error.message : String(error),
+      message,
     });
     process.exitCode = 1;
   }

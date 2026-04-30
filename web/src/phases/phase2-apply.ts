@@ -1,5 +1,5 @@
 import type { AnalyzeLogger } from "../core/logger.js";
-import { rewriteNames } from "../core/rule-generation.js";
+import { compileRewriteLookup, rewriteNamesWithLookup } from "../core/rule-generation.js";
 import type {
   CircleRewriting,
   RewritingData,
@@ -105,15 +105,20 @@ export function createPhase2Session(
       rewritingCircle?.["album artists rewriting"] ?? [],
       allRewriting?.["album artists rewriting"],
     );
+    const artistLookup = compileRewriteLookup(artistRules);
+    const albumArtistLookup = compileRewriteLookup(albumArtistRules);
 
     for (const album of Object.values(circle.albums)) {
-      const rewrittenAlbumArtists = rewriteNames(album["album artists"], albumArtistRules);
+      const rewrittenAlbumArtists = rewriteNamesWithLookup(
+        album["album artists"],
+        albumArtistLookup,
+      );
       rewrittenAlbumArtists.forEach((name) => {
         albumArtists[name] = (albumArtists[name] ?? 0) + 1;
       });
       for (const disc of album.discs) {
         for (const track of Object.values(disc.tracks)) {
-          for (const artist of rewriteNames(track.artists, artistRules)) {
+          for (const artist of rewriteNamesWithLookup(track.artists, artistLookup)) {
             artists[artist] = (artists[artist] ?? 0) + 1;
           }
           if (track.genre?.trim()) {

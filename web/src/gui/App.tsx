@@ -13,9 +13,21 @@ import { downloadJsonFile } from "./utils/json";
 type TabKey = "structured" | "rewriting";
 type RewritingTarget = "artists rewriting" | "album artists rewriting" | "genre rewriting";
 type AuditFilter = "all" | string;
+type RewriteCycleSelection = {
+  circle: string;
+  target: RewritingTarget;
+  rules: Set<number>;
+};
 type WorkerResponse =
   | { id: number; ok: true; type: "import"; state: EditorState; audits: AuditLog }
-  | { id: number; ok: true; type: "sync"; state: EditorState; audits: AuditLog }
+  | {
+      id: number;
+      ok: true;
+      type: "sync";
+      structured: EditorState["structured"];
+      rewriting: EditorState["rewriting"];
+      audits: AuditLog;
+    }
   | { id: number; ok: true; type: "compute-updates"; updates: unknown }
   | { id: number; ok: false; error: string };
 const DB_NAME = "tlmc-gui";
@@ -34,6 +46,8 @@ export function App() {
   const [rewritingCircle, setRewritingCircle] = useState("");
   const [rewritingTarget, setRewritingTarget] =
     useState<RewritingTarget>("artists rewriting");
+  const [rewriteCycleSelection, setRewriteCycleSelection] =
+    useState<RewriteCycleSelection | undefined>(undefined);
 
   const discListRef = useRef<HTMLDivElement | null>(null);
   const rulesRef = useRef<HTMLDivElement | null>(null);
@@ -213,7 +227,8 @@ export function App() {
   }): Promise<WorkerResponse>;
   async function callWorker(request: {
     type: "sync";
-    state: EditorState;
+    structured: EditorState["structured"];
+    rewriting: EditorState["rewriting"];
   }): Promise<WorkerResponse>;
   async function callWorker(request: {
     type: "compute-updates";
@@ -222,7 +237,11 @@ export function App() {
   async function callWorker(
     request:
       | { type: "import"; metadataText: string; structuredText?: string; rewritingText?: string }
-      | { type: "sync"; state: EditorState }
+      | {
+          type: "sync";
+          structured: EditorState["structured"];
+          rewriting: EditorState["rewriting"];
+        }
       | { type: "compute-updates"; state: EditorState },
   ): Promise<WorkerResponse> {
     if (!workerRef.current) {
@@ -267,6 +286,7 @@ export function App() {
       setStructuredCircle(firstCircle);
       setStructuredAlbum(firstAlbum);
       setRewritingCircle(initial.rewriting.$all ? "$all" : firstCircle);
+      setRewriteCycleSelection(undefined);
       setAuditLog(normalizeAuditLog(response.audits));
       setStatusMessage("Import success.");
     } catch (error) {
@@ -299,6 +319,7 @@ export function App() {
     setStructuredCircle(firstCircle);
     setStructuredAlbum(firstAlbum);
     setRewritingCircle(initial.rewriting.$all ? "$all" : firstCircle);
+    setRewriteCycleSelection(undefined);
     setStatusMessage("Loaded debug sample.");
     setAuditLog(normalizeAuditLog(response.audits));
     setIsLoading(false);
@@ -309,14 +330,40 @@ export function App() {
       return;
     }
     setIsLoading(true);
-    const response = await callWorker({ type: "sync", state: editor });
+    const response = await callWorker({
+      type: "sync",
+      structured: editor.structured,
+      rewriting: editor.rewriting,
+    });
     if (!response.ok || response.type !== "sync") {
+      const cycleSelection = response.ok ? undefined : parseRewriteCycleError(response.error);
+      if (cycleSelection) {
+        setTab("rewriting");
+        setRewritingCircle(cycleSelection.circle);
+        setRewritingTarget(cycleSelection.target);
+        setRewriteCycleSelection(cycleSelection);
+        window.setTimeout(() => {
+          document.querySelector(".rewrite-rule-card-error")?.scrollIntoView({
+            block: "center",
+            behavior: "smooth",
+          });
+        }, 0);
+      }
       setStatusMessage(`Sync failed: ${response.ok ? "Unexpected response." : response.error}`);
       setIsLoading(false);
       return;
     }
-    setEditor(response.state);
+    setEditor((previous) =>
+      previous
+        ? {
+            ...previous,
+            structured: response.structured,
+            rewriting: response.rewriting,
+          }
+        : previous,
+    );
     setAuditLog(normalizeAuditLog(response.audits));
+    setRewriteCycleSelection(undefined);
     setStatusMessage("Sync complete.");
     setIsLoading(false);
   }
@@ -572,8 +619,13 @@ export function App() {
                 <div className="card">
                   <h3>Names</h3>
                   <div className="list names-list">
-                    {getNamesForTarget(rewritingCircleData, rewritingTarget).map((name) => (
-                      <div key={name}>{name}</div>
+                    {getNameEntriesForTarget(rewritingCircleData, rewritingTarget).map((entry) => (
+                      <div className="name-row" key={entry.name}>
+                        <span>{entry.name}</span>
+                        {entry.count !== undefined ? (
+                          <span className="name-count">{entry.count}</span>
+                        ) : null}
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -584,8 +636,21 @@ export function App() {
                     list is `to`. You can drag names between the two lists.
                   </div>
                   <div className="list rules-list" ref={rulesRef}>
-                    {rewritingRules.map((rule, index) => (
-                      <div className="card rewrite-rule-card" key={`rule-${index}`}>
+                    {rewritingRules.map((rule, index) => {
+                      const hasCycleError =
+                        rewriteCycleSelection?.circle === rewritingCircle &&
+                        rewriteCycleSelection.target === rewritingTarget &&
+                        rewriteCycleSelection.rules.has(index);
+                      return (
+                      <div
+                        className={`card rewrite-rule-card${hasCycleError ? " rewrite-rule-card-error" : ""}`}
+                        key={`rule-${index}`}
+                      >
+                        {hasCycleError ? (
+                          <div className="muted validation-hint validation-error">
+                            This rule participates in a rewrite cycle.
+                          </div>
+                        ) : null}
                         {rule.from.length === 0 || rule.to.length === 0 ? (
                           <div className="muted validation-hint">
                             A rule needs at least one value in both `from` and `to`.
@@ -612,7 +677,8 @@ export function App() {
                           }
                         />
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -773,16 +839,57 @@ function getNamesForTarget(
   circle: CircleRewriting | undefined,
   target: RewritingTarget,
 ): string[] {
+  return getNameEntriesForTarget(circle, target).map((entry) => entry.name);
+}
+
+function getNameEntriesForTarget(
+  circle: CircleRewriting | undefined,
+  target: RewritingTarget,
+): { name: string; count?: number }[] {
   if (!circle) {
     return [];
   }
   if (target === "artists rewriting") {
-    return Object.keys(circle["all artists"]).sort((a, b) => a.localeCompare(b));
+    return entriesFromCounts(circle["all artists"]);
   }
   if (target === "album artists rewriting") {
-    return Object.keys(circle["all album artists"]).sort((a, b) => a.localeCompare(b));
+    return entriesFromCounts(circle["all album artists"]);
   }
-  return [...circle["all genres"]];
+  return circle["all genres"].map((name) => ({ name }));
+}
+
+function entriesFromCounts(counts: Record<string, number>): { name: string; count: number }[] {
+  return Object.entries(counts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, count]) => ({ name, count }));
+}
+
+function parseRewriteCycleError(message: string): RewriteCycleSelection | undefined {
+  const match =
+    /rewrite cycle at \$\[(?<circle>"(?:\\.|[^"\\])*")\]\[(?<target>"(?:\\.|[^"\\])*")\] rules=(?<rules>\[[^\]]*\])/.exec(
+      message,
+    );
+  if (!match?.groups) {
+    return undefined;
+  }
+  try {
+    const target = JSON.parse(match.groups.target) as string;
+    if (
+      target !== "artists rewriting" &&
+      target !== "album artists rewriting" &&
+      target !== "genre rewriting"
+    ) {
+      return undefined;
+    }
+    const rules = JSON.parse(match.groups.rules) as unknown;
+    return {
+      circle: JSON.parse(match.groups.circle) as string,
+      target,
+      rules: new Set(Array.isArray(rules) ? rules.filter((item) => typeof item === "number") : []),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function reorderObjectByIndex<T>(

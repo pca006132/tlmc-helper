@@ -1,5 +1,5 @@
 import { NoopLogger } from "../../core/logger.js";
-import { runPhase1, runPhase3 } from "../../core/api.js";
+import { refreshRewriting, runPhase1, runPhase3 } from "../../core/api.js";
 import type {
   MetadataMap,
   RewritingData,
@@ -45,22 +45,21 @@ export function initializeEditorState(
   };
 }
 
-export function syncEditorState(state: EditorState): { state: EditorState; audits: AuditLog } {
+export function syncStructuredAndRewriting(
+  structured: StructuredData,
+  rewriting: RewritingData,
+): { structured: StructuredData; rewriting: RewritingData; audits: AuditLog } {
   const auditLogger = new CollectingLogger();
-  const phase1 = runPhase1(
+  const refreshed = refreshRewriting(
     {
-      metadata: state.metadata,
-      existingStructured: state.structured,
-      existingRewriting: state.rewriting,
+      structured,
+      existingRewriting: rewriting,
     },
     auditLogger,
   );
   return {
-    state: {
-      ...state,
-      structured: phase1.structured,
-      rewriting: phase1.rewriting,
-    },
+    structured,
+    rewriting: refreshed,
     audits: auditLogger.auditLog,
   };
 }

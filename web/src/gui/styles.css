@@ -158,6 +158,11 @@ h3 {
   gap: 8px;
 }
 
+.rewrite-rule-card-error {
+  border-color: #e18484;
+  background: #fff7f7;
+}
+
 .rule-actions {
   align-items: center;
 }
@@ -183,12 +188,35 @@ h3 {
   padding-right: 4px;
 }
 
+.name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.name-row span:first-child {
+  overflow-wrap: anywhere;
+}
+
+.name-count {
+  color: #687386;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
 .validation-hint {
   color: #915f00;
   background: #fff4d8;
   border: 1px solid #f2d392;
   border-radius: 6px;
   padding: 6px 8px;
+}
+
+.validation-error {
+  color: #8d2323;
+  background: #ffe5e5;
+  border-color: #f2a5a5;
 }
 
 .tag-chip-list {

@@ -60,11 +60,11 @@ describe("analyze-albums TypeScript parity", () => {
     expect(missingInfo.length).toBeGreaterThan(0);
   });
 
-  test("rewrites track-1 numeric title prefix and audits album", () => {
+  test("structured build preserves joined artist fields and generates split rules separately", () => {
     const metadata: MetadataMap = {
       "CircleA/2024.01.01 Album/01.mp3": {
-        Title: "[01]. Intro",
-        Artists: ["CircleA"],
+        Title: "A",
+        Artists: ["Alice + Bob"],
         "Album artists": ["CircleA"],
         "Track number": 1,
       },
@@ -76,7 +76,53 @@ describe("analyze-albums TypeScript parity", () => {
       phase1.structured.CircleA.albums.Album.discs[0].tracks[
         "CircleA/2024.01.01 Album/01.mp3"
       ];
-    expect(track.title).toBe("Intro");
+    expect(track.artists).toEqual(["Alice + Bob"]);
+    expect(phase1.rewriting.CircleA["artists rewriting"]).toContainEqual({
+      from: ["Alice + Bob"],
+      to: ["Alice", "Bob"],
+    });
+  });
+
+  test("rewrites matching numeric title prefixes and audits album", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "[01]. Intro",
+        Artists: ["CircleA"],
+        "Album artists": ["CircleA"],
+        "Track number": 1,
+      },
+      "CircleA/2024.01.01 Album/02.mp3": {
+        Title: "02. Second",
+        Artists: ["CircleA"],
+        "Album artists": ["CircleA"],
+        "Track number": 2,
+      },
+      "CircleA/2024.01.01 Album/10.mp3": {
+        Title: "(10) Tenth",
+        Artists: ["CircleA"],
+        "Album artists": ["CircleA"],
+        "Track number": 10,
+      },
+    };
+    const logger = new CaptureLogger();
+    const phase1 = runPhase1({ metadata }, logger);
+
+    const tracks = phase1.structured.CircleA.albums.Album.discs[0].tracks;
+    expect(
+      tracks[
+        "CircleA/2024.01.01 Album/01.mp3"
+      ].title,
+    ).toBe("Intro");
+    expect(
+      tracks[
+        "CircleA/2024.01.01 Album/02.mp3"
+      ].title,
+    ).toBe("Second");
+    expect(
+      tracks[
+        "CircleA/2024.01.01 Album/10.mp3"
+      ].title,
+    ).toBe("Tenth");
 
     const rewriteAudit = logger.entries.filter(
       (entry) => entry.code === "track_title_rewrite",
@@ -127,6 +173,193 @@ describe("analyze-albums TypeScript parity", () => {
     expect(patch["Album artists"]).toEqual(["New"]);
     expect(patch.Year).toBe("2024");
     expect(patch["Total tracks"]).toBe(1);
+  });
+
+  test("applies chained rewriting rules and rejects cycles", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "Song",
+        Artists: ["Old"],
+        "Album artists": ["Old"],
+        "Track number": 1,
+      },
+    };
+    const logger = new CaptureLogger();
+    const rewriting: RewritingData = {
+      CircleA: {
+        ...emptyCircleRewriting(),
+        "artists rewriting": [
+          { from: ["Old"], to: ["Middle"] },
+          { from: ["Middle"], to: ["New"] },
+        ],
+        "album artists rewriting": [
+          { from: ["Old"], to: ["Middle"] },
+          { from: ["Middle"], to: ["New"] },
+        ],
+      },
+      $all: emptyCircleRewriting(),
+    };
+    const phase1 = runPhase1({ metadata, existingRewriting: rewriting }, logger);
+    const phase3 = runPhase3(
+      { metadata, structured: phase1.structured, rewriting: phase1.rewriting },
+      logger,
+    );
+
+    expect(phase3.updates["CircleA/2024.01.01 Album/01.mp3"].Artists).toEqual(["New"]);
+    expect(() =>
+      runPhase1({
+        metadata,
+        existingRewriting: {
+          CircleA: {
+            ...emptyCircleRewriting(),
+            "artists rewriting": [
+              { from: ["Old"], to: ["Middle"] },
+              { from: ["Middle"], to: ["Old"] },
+            ],
+          },
+        },
+      }, logger),
+    ).toThrow(/rewrite cycle/);
+  });
+
+  test("uses global known names for aggressive split generation", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "A",
+        Artists: ["Alice"],
+        "Album artists": ["CircleA"],
+        "Track number": 1,
+      },
+      "CircleB/2024.01.01 Album/01.mp3": {
+        Title: "B",
+        Artists: ["Alice/Bob"],
+        "Album artists": ["CircleB"],
+        "Track number": 1,
+      },
+    };
+    const logger = new CaptureLogger();
+    const phase1 = runPhase1({ metadata }, logger);
+
+    expect(phase1.rewriting.CircleB["artists rewriting"]).toContainEqual({
+      from: ["Alice/Bob"],
+      to: ["Alice", "Bob"],
+    });
+  });
+
+  test("saturates generated split rule outputs through normalization", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "A",
+        Artists: ["Bob"],
+        "Album artists": ["CircleA"],
+        "Track number": 1,
+      },
+      "CircleA/2024.01.01 Album/02.mp3": {
+        Title: "B",
+        Artists: ["Alice + ＢＯＢ"],
+        "Album artists": ["CircleA"],
+        "Track number": 2,
+      },
+    };
+    const logger = new CaptureLogger();
+    const phase1 = runPhase1({ metadata }, logger);
+
+    expect(phase1.rewriting.CircleA["artists rewriting"]).toContainEqual({
+      from: ["Alice + ＢＯＢ"],
+      to: ["Alice", "Bob"],
+    });
+  });
+
+  test("uses the first ordered low-confidence capture result", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "A",
+        Artists: ["Circle"],
+        "Album artists": ["CircleA"],
+        "Track number": 1,
+      },
+      "CircleA/2024.01.01 Album/02.mp3": {
+        Title: "B",
+        Artists: ["Alice (Circle)"],
+        "Album artists": ["CircleA"],
+        "Track number": 2,
+      },
+    };
+    const logger = new CaptureLogger();
+    const phase1 = runPhase1({ metadata }, logger);
+
+    expect(phase1.rewriting.CircleA["artists rewriting"]).toContainEqual({
+      from: ["Alice (Circle)"],
+      to: ["Circle"],
+    });
+  });
+
+  test("refreshes per-circle genres with genre rewriting and default genre", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "A",
+        Artists: ["CircleA"],
+        "Album artists": ["CircleA"],
+        "Track number": 1,
+        Genre: "Soundtrack",
+      },
+      "CircleA/2024.01.01 Album/02.mp3": {
+        Title: "B",
+        Artists: ["CircleA"],
+        "Album artists": ["CircleA"],
+        "Track number": 2,
+      },
+    };
+    const logger = new CaptureLogger();
+    const phase1 = runPhase1({
+      metadata,
+      existingRewriting: {
+        CircleA: {
+          ...emptyCircleRewriting(),
+          "genre rewriting": [{ from: ["Soundtrack"], to: ["Touhou"] }],
+          "default genre": "Arrange",
+        },
+        $all: emptyCircleRewriting(),
+      },
+    }, logger);
+
+    expect(phase1.rewriting.CircleA["all genres"]).toEqual(["Arrange", "Touhou"]);
+  });
+
+  test("normalizes CJK variants for generated simple rules", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "A",
+        Artists: ["乐团"],
+        "Album artists": ["CircleA"],
+        "Track number": 1,
+      },
+      "CircleA/2024.01.01 Album/02.mp3": {
+        Title: "B",
+        Artists: ["乐团"],
+        "Album artists": ["CircleA"],
+        "Track number": 2,
+      },
+      "CircleA/2024.01.01 Album/03.mp3": {
+        Title: "C",
+        Artists: ["樂團"],
+        "Album artists": ["CircleA"],
+        "Track number": 3,
+      },
+      "CircleA/2024.01.01 Album/04.mp3": {
+        Title: "D",
+        Artists: ["楽団"],
+        "Album artists": ["CircleA"],
+        "Track number": 4,
+      },
+    };
+    const logger = new CaptureLogger();
+    const phase1 = runPhase1({ metadata }, logger);
+
+    expect(phase1.rewriting.CircleA["artists rewriting"]).toContainEqual({
+      from: ["楽団", "樂團"],
+      to: ["乐团"],
+    });
   });
 
   test("cli supports circle filtering", () => {
@@ -180,6 +413,120 @@ describe("analyze-albums TypeScript parity", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  });
+
+  test("update generation uses edited structured album names", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Folder Name/01.mp3": {
+        Title: "Song",
+        Artists: ["CircleA"],
+        "Album artists": ["CircleA"],
+        "Album title": "Folder Name",
+        "Track number": 1,
+      },
+    };
+    const logger = new CaptureLogger();
+    const phase1 = runPhase1({ metadata }, logger);
+    const structured = structuredClone(phase1.structured);
+    const album = structured.CircleA.albums["Folder Name"];
+    delete structured.CircleA.albums["Folder Name"];
+    structured.CircleA.albums["Edited Album"] = album;
+
+    const phase3 = runPhase3(
+      { metadata, structured, rewriting: phase1.rewriting },
+      logger,
+    );
+
+    expect(phase3.updates["CircleA/2024.01.01 Folder Name/01.mp3"]["Album title"]).toBe(
+      "Edited Album",
+    );
+  });
+
+  test("sync merges new metadata tracks into existing structured data", () => {
+    const initialMetadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "One",
+        Artists: ["CircleA"],
+        "Album artists": ["CircleA"],
+        "Track number": 1,
+      },
+    };
+    const rescannedMetadata: MetadataMap = {
+      ...initialMetadata,
+      "CircleA/2024.01.01 Album/02.mp3": {
+        Title: "Two",
+        Artists: ["CircleA"],
+        "Album artists": ["CircleA"],
+        "Track number": 2,
+      },
+    };
+    const logger = new CaptureLogger();
+    const initial = runPhase1({ metadata: initialMetadata }, logger);
+    const synced = runPhase1(
+      {
+        metadata: rescannedMetadata,
+        existingStructured: initial.structured,
+        existingRewriting: initial.rewriting,
+      },
+      logger,
+    );
+
+    expect(
+      synced.structured.CircleA.albums.Album.discs[0].tracks[
+        "CircleA/2024.01.01 Album/02.mp3"
+      ]?.title,
+    ).toBe("Two");
+  });
+
+  test("cycle validation follows first-wins and global effective rules", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "Song",
+        Artists: ["Old"],
+        "Album artists": ["CircleA"],
+        "Track number": 1,
+      },
+    };
+    const logger = new CaptureLogger();
+
+    expect(() =>
+      runPhase1(
+        {
+          metadata,
+          existingRewriting: {
+            CircleA: {
+              ...emptyCircleRewriting(),
+              "artists rewriting": [
+                { from: ["A"], to: ["B"] },
+                { from: ["A"], to: ["C"] },
+                { from: ["C"], to: ["A"] },
+              ],
+            },
+            $all: emptyCircleRewriting(),
+          },
+        },
+        logger,
+      ),
+    ).not.toThrow();
+
+    expect(() =>
+      runPhase1(
+        {
+          metadata,
+          existingRewriting: {
+            CircleA: {
+              ...emptyCircleRewriting(),
+              "artists rewriting": [{ from: ["A"], to: ["B"] }],
+            },
+            $all: {
+              ...emptyCircleRewriting(),
+              "artists rewriting": [{ from: ["B"], to: ["A"] }],
+            },
+          },
+        },
+        logger,
+      ),
+    ).toThrow(/rewrite cycle/);
   });
 });
 

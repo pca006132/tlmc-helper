@@ -1,3 +1,11 @@
+import * as OpenCC from "opencc-js";
+
+const CJK_TO_SIMPLIFIED_CONVERTERS = [
+  OpenCC.Converter({ from: "tw", to: "cn" }),
+  OpenCC.Converter({ from: "hk", to: "cn" }),
+  OpenCC.Converter({ from: "jp", to: "cn" }),
+];
+
 export function foldFullwidthAscii(input: string): string {
   let out = "";
   for (const char of input) {
@@ -13,11 +21,23 @@ export function foldFullwidthAscii(input: string): string {
   return out;
 }
 
-export function normalizeName(value: string): string {
+export function normalizeNameCjk(value: string): string {
+  return CJK_TO_SIMPLIFIED_CONVERTERS.reduce(
+    (current, convert) => convert(current),
+    value.normalize("NFKC"),
+  );
+}
+
+export function normalizeNameLight(value: string): string {
   return foldFullwidthAscii(value)
     .toLowerCase()
     .replace(/\s+/g, "")
-    .replace(/['“”]/g, '"');
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"');
+}
+
+export function normalizeName(value: string): string {
+  return normalizeNameLight(normalizeNameCjk(value));
 }
 
 export function dedupPreserve(values: string[]): string[] {

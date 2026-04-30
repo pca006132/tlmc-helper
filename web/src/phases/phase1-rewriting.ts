@@ -1,11 +1,13 @@
 import {
   aggregateNamesForTrack,
   countNameOccurrences,
+  createNormalizeContext,
   dedupRewriteRules,
   generateCompiledNameRules,
   generateSplitStageOutput,
-  knownCircleNames,
-  rewriteNames,
+  knownNamesFromValues,
+  compileRewriteLookup,
+  rewriteNamesWithLookup,
 } from "../core/rule-generation.js";
 import { dedupSorted } from "../core/name-utils.js";
 import type {
@@ -20,16 +22,19 @@ export function rewriteGenre(
   rules: RewriteRule[],
   defaultGenre: string | undefined,
 ): string | undefined {
-  const value = input ?? defaultGenre;
-  if (!value) {
+  const initial = input ?? defaultGenre;
+  if (!initial) {
     return undefined;
   }
-  for (const rule of rules) {
-    if (rule.from.includes(value)) {
-      return rule.to[0];
-    }
-  }
-  return value;
+  const lookup = compileRewriteLookup(rules);
+  return rewriteGenreWithLookup(initial, lookup);
+}
+
+function rewriteGenreWithLookup(
+  initial: string,
+  lookup: Map<string, string[]>,
+): string {
+  return lookup.get(initial)?.[0] ?? initial;
 }
 
 export function chainRulesWithGlobal(
@@ -57,11 +62,13 @@ export function applyRewritesToStructured(
       circleRules["album artists rewriting"],
       allRewriting?.["album artists rewriting"],
     );
+    const artistLookup = compileRewriteLookup(artistRules);
+    const albumArtistLookup = compileRewriteLookup(albumArtistRules);
     for (const album of Object.values(circle.albums)) {
-      album["album artists"] = rewriteNames(album["album artists"], albumArtistRules);
+      album["album artists"] = rewriteNamesWithLookup(album["album artists"], albumArtistLookup);
       for (const disc of album.discs) {
         for (const track of Object.values(disc.tracks)) {
-          track.artists = rewriteNames(track.artists, artistRules);
+          track.artists = rewriteNamesWithLookup(track.artists, artistLookup);
         }
       }
     }
@@ -72,15 +79,42 @@ export function countSubstringHits(
   names: string[],
   nameCounts: Record<string, number>,
 ): Record<string, number> {
-  const out: Record<string, number> = {};
-  for (const name of names) {
-    let count = 0;
-    for (const [value, valueCount] of Object.entries(nameCounts)) {
-      if (value.includes(name)) {
-        count += valueCount;
+  const out = Object.fromEntries(names.map((name) => [name, 0])) as Record<string, number>;
+  const namesByLength = bucketNamesByLength(names);
+  const candidateLengths = [...namesByLength.keys()].sort((a, b) => a - b);
+
+  for (const [value, valueCount] of Object.entries(nameCounts)) {
+    const seen = new Set<string>();
+    for (const length of candidateLengths) {
+      if (length > value.length) {
+        break;
+      }
+      const candidates = namesByLength.get(length);
+      if (!candidates) {
+        continue;
+      }
+      for (let start = 0; start <= value.length - length; start += 1) {
+        const candidate = value.slice(start, start + length);
+        if (candidates.has(candidate) && !seen.has(candidate)) {
+          out[candidate] += valueCount;
+          seen.add(candidate);
+        }
       }
     }
-    out[name] = count;
+  }
+
+  return out;
+}
+
+function bucketNamesByLength(names: string[]): Map<number, Set<string>> {
+  const out = new Map<number, Set<string>>();
+  for (const name of names) {
+    if (name.length === 0) {
+      continue;
+    }
+    const bucket = out.get(name.length) ?? new Set<string>();
+    bucket.add(name);
+    out.set(name.length, bucket);
   }
   return out;
 }
@@ -89,20 +123,10 @@ export function buildRewritingFromStructured(
   structured: StructuredData,
   existing: RewritingData | undefined,
 ): RewritingData {
-  const effectiveStructured: StructuredData = structuredClone(structured);
-  if (existing) {
-    applyRewritesToStructured(effectiveStructured, existing);
-  }
+  const globalKnownNames = collectKnownNames(structured);
 
   const out: RewritingData = {};
-  for (const [circleName, circleData] of Object.entries(effectiveStructured)) {
-    const allGenres = dedupSorted(
-      Object.values(circleData.albums)
-        .flatMap((album) => album.discs)
-        .flatMap((disc) => Object.values(disc.tracks))
-        .flatMap((track) => (track.genre?.trim() ? [track.genre] : [])),
-    );
-
+  for (const [circleName, circleData] of Object.entries(structured)) {
     let artistRules: RewriteRule[];
     let albumArtistRules: RewriteRule[];
     let genreRules: RewriteRule[];
@@ -134,16 +158,23 @@ export function buildRewritingFromStructured(
           }
         }
       }
-      const knownNames = knownCircleNames(rawArtistNames, rawAlbumArtistNames);
+      const normalize = createNormalizeContext();
+      normalize.preload([
+        ...globalKnownNames,
+        ...rawArtistNames,
+        ...rawAlbumArtistNames,
+      ]);
       const [artistStageRules, artistSplitNames] = generateSplitStageOutput(
         rawArtistNames,
         dedupRewriteRules(normalSplitArtistRules),
-        knownNames,
+        globalKnownNames,
+        normalize,
       );
       const [albumArtistStageRules, albumArtistSplitNames] = generateSplitStageOutput(
         rawAlbumArtistNames,
         dedupRewriteRules(normalSplitAlbumArtistRules),
-        knownNames,
+        globalKnownNames,
+        normalize,
       );
       const splitNameCounts = countNameOccurrences([
         ...artistSplitNames,
@@ -154,27 +185,50 @@ export function buildRewritingFromStructured(
         artistStageRules,
         artistSplitNames,
         splitNameCounts,
-        5,
+        globalKnownNames,
+        normalize,
       );
       albumArtistRules = generateCompiledNameRules(
         rawAlbumArtistNames,
         albumArtistStageRules,
         albumArtistSplitNames,
         splitNameCounts,
-        5,
+        globalKnownNames,
+        normalize,
       );
       genreRules = [];
       defaultGenre = undefined;
     }
 
+    const allGenreRules = chainRulesWithGlobal(
+      genreRules,
+      existing?.$all?.["genre rewriting"],
+    );
+    const allArtistRules = chainRulesWithGlobal(
+      artistRules,
+      existing?.$all?.["artists rewriting"],
+    );
+    const allAlbumArtistRules = chainRulesWithGlobal(
+      albumArtistRules,
+      existing?.$all?.["album artists rewriting"],
+    );
+    const allGenreLookup = compileRewriteLookup(allGenreRules);
+    const allGenres = collectEffectiveGenres(
+      circleData,
+      allGenreLookup,
+      defaultGenre ?? existing?.$all?.["default genre"],
+    );
+
     const rewrittenArtistNameCounts: Record<string, number> = {};
     const rewrittenAlbumArtistNameCounts: Record<string, number> = {};
     const combinedNameCounts: Record<string, number> = {};
+    const artistLookup = compileRewriteLookup(allArtistRules);
+    const albumArtistLookup = compileRewriteLookup(allAlbumArtistRules);
     for (const album of Object.values(circleData.albums)) {
-      const albumRewritten = rewriteNames(album["album artists"], albumArtistRules);
+      const albumRewritten = rewriteNamesWithLookup(album["album artists"], albumArtistLookup);
       for (const disc of album.discs) {
         for (const track of Object.values(disc.tracks)) {
-          for (const name of rewriteNames(track.artists, artistRules)) {
+          for (const name of rewriteNamesWithLookup(track.artists, artistLookup)) {
             rewrittenArtistNameCounts[name] = (rewrittenArtistNameCounts[name] ?? 0) + 1;
             combinedNameCounts[name] = (combinedNameCounts[name] ?? 0) + 1;
           }
@@ -201,8 +255,43 @@ export function buildRewritingFromStructured(
     };
   }
 
-  out.$all = buildGlobalRewritingEntry(effectiveStructured, out, existing);
+  out.$all = buildGlobalRewritingEntry(structured, out, existing);
   return out;
+}
+
+function collectKnownNames(structured: StructuredData): Set<string> {
+  const values: string[] = [];
+  for (const circle of Object.values(structured)) {
+    for (const album of Object.values(circle.albums)) {
+      values.push(...album["album artists"]);
+      for (const disc of album.discs) {
+        for (const track of Object.values(disc.tracks)) {
+          values.push(...track.artists);
+        }
+      }
+    }
+  }
+  return knownNamesFromValues(values);
+}
+
+function collectEffectiveGenres(
+  circleData: StructuredData[string],
+  lookup: Map<string, string[]>,
+  defaultGenre: string | undefined,
+): string[] {
+  const values: string[] = [];
+  for (const album of Object.values(circleData.albums)) {
+    for (const disc of album.discs) {
+      for (const track of Object.values(disc.tracks)) {
+        const initial = track.genre ?? defaultGenre;
+        const genre = initial ? rewriteGenreWithLookup(initial, lookup) : undefined;
+        if (genre?.trim()) {
+          values.push(genre);
+        }
+      }
+    }
+  }
+  return dedupSorted(values);
 }
 
 function buildGlobalRewritingEntry(
@@ -240,11 +329,14 @@ function buildGlobalRewritingEntry(
       circleRules["genre rewriting"],
       globalGenreRules,
     );
+    const artistLookup = compileRewriteLookup(artistRules);
+    const albumArtistLookup = compileRewriteLookup(albumArtistRules);
+    const genreLookup = compileRewriteLookup(genreRules);
     for (const album of Object.values(circleData.albums)) {
-      const albumRewritten = rewriteNames(album["album artists"], albumArtistRules);
+      const albumRewritten = rewriteNamesWithLookup(album["album artists"], albumArtistLookup);
       for (const disc of album.discs) {
         for (const track of Object.values(disc.tracks)) {
-          for (const name of rewriteNames(track.artists, artistRules)) {
+          for (const name of rewriteNamesWithLookup(track.artists, artistLookup)) {
             rewrittenArtistNameCounts[name] = (rewrittenArtistNameCounts[name] ?? 0) + 1;
             combinedNameCounts[name] = (combinedNameCounts[name] ?? 0) + 1;
           }
@@ -253,13 +345,10 @@ function buildGlobalRewritingEntry(
               (rewrittenAlbumArtistNameCounts[name] ?? 0) + 1;
             combinedNameCounts[name] = (combinedNameCounts[name] ?? 0) + 1;
           }
-          const genre = rewriteGenre(
-            track.genre,
-            genreRules,
-            circleRules["default genre"] ?? globalDefaultGenre,
-          );
-          if (genre?.trim()) {
-            allGenres.push(genre);
+          const genre = track.genre ?? circleRules["default genre"] ?? globalDefaultGenre;
+          const rewrittenGenre = genre ? rewriteGenreWithLookup(genre, genreLookup) : undefined;
+          if (rewrittenGenre?.trim()) {
+            allGenres.push(rewrittenGenre);
           }
         }
       }
