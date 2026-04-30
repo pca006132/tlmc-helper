@@ -613,13 +613,34 @@ export function App() {
     <div className="app">
       {isLoading ? (
         <div className="overlay">
-          <div className="spinner" />
+          <div className="loading-card" role="status" aria-live="polite">
+            <div className="loading-title">Working</div>
+            <div className="skeleton-line skeleton-line-wide" />
+            <div className="skeleton-line" />
+            <div className="skeleton-grid">
+              <span />
+              <span />
+              <span />
+            </div>
+          </div>
         </div>
       ) : null}
+      <header className="app-header">
+        <div>
+          <p className="eyebrow">metadata workspace</p>
+          <h1>TLMC editor</h1>
+        </div>
+        <div className="app-header-copy">
+          Import source metadata, review normalized albums, tune rewrite rules, then export the generated JSON.
+        </div>
+      </header>
       <div className={`app-top${editor ? "" : " app-top-single"}`}>
         <div className="panel">
           <div className="panel-header">
-            <h2>Import</h2>
+            <div>
+              <p className="eyebrow">start</p>
+              <h2>Import workspace</h2>
+            </div>
             {statusMessage ? <div className="status-pill">{statusMessage}</div> : null}
           </div>
           <ImportPanel onImport={onImport} onLoadDebugSample={onLoadDebugSample} />
@@ -627,7 +648,10 @@ export function App() {
         {editor ? (
           <div className="panel downloads-panel">
             <div className="panel-header">
-              <h2>Download</h2>
+              <div>
+                <p className="eyebrow">finish</p>
+                <h2>Export</h2>
+              </div>
             </div>
             <div className="download-actions">
               <button type="button" onClick={() => void onDownloadStructured()}>
@@ -643,6 +667,19 @@ export function App() {
           </div>
         ) : null}
       </div>
+
+      {!editor ? (
+        <section className="empty-state panel" aria-label="Empty workspace">
+          <div>
+            <p className="eyebrow">ready when you are</p>
+            <h2>No workspace loaded</h2>
+          </div>
+          <p>
+            Choose metadata.json to build a new workspace, or add existing structured and rewriting files
+            to resume an edit session.
+          </p>
+        </section>
+      ) : null}
 
       {editor && (
         <div className="panel editor-panel">
@@ -933,8 +970,7 @@ export function App() {
                     <span className="count-badge">{rewritingRules.length}</span>
                   </div>
                   <div className="muted pane-copy">
-                    Drag rule cards to reorder. In each rule, the first name list is `from` and the second
-                    list is `to`. You can drag names between the two lists.
+                    Drag rule headers to reorder. Move chips between From and To to adjust each mapping.
                   </div>
                   <div className="list rules-list" ref={rulesRef}>
                     {rewritingRules.map((rule, index) => {
@@ -947,6 +983,10 @@ export function App() {
                         className={`card rewrite-rule-card${hasCycleError ? " rewrite-rule-card-error" : ""}`}
                         key={`rule-${index}`}
                       >
+                        <div className="rule-header">
+                          <span>Rule {index + 1}</span>
+                          <span className="drag-handle">Drag to reorder</span>
+                        </div>
                         {hasCycleError ? (
                           <div className="muted validation-hint validation-error">
                             This rule participates in a rewrite cycle.
@@ -1659,42 +1699,59 @@ function RuleEditor(props: {
     }
   };
 
+  const startTagDrag = (
+    event: React.DragEvent<HTMLSpanElement>,
+    source: { side: "from" | "to"; index: number },
+  ): void => {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-tlmc-rewrite-tag", JSON.stringify(source));
+    event.dataTransfer.setData("text/plain", JSON.stringify(source));
+  };
+
+  const dropTag = (
+    event: React.DragEvent<HTMLDivElement>,
+    toSide: "from" | "to",
+  ): void => {
+    event.preventDefault();
+    event.stopPropagation();
+    const payload =
+      event.dataTransfer.getData("application/x-tlmc-rewrite-tag") ||
+      event.dataTransfer.getData("text/plain");
+    if (!payload) {
+      return;
+    }
+    const source = parseDragPayload(payload);
+    if (!source) {
+      return;
+    }
+    moveTag(source, toSide);
+  };
+
   return (
     <div className="rule-tag-editor">
       <div
         className="tag-chip-list"
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => {
+        onDragOver={(event) => {
           event.preventDefault();
-          const payload = event.dataTransfer.getData("text/plain");
-          if (!payload) {
-            return;
-          }
-          const source = parseDragPayload(payload);
-          if (!source) {
-            return;
-          }
-          moveTag(source, "from");
+          event.dataTransfer.dropEffect = "move";
         }}
+        onDrop={(event) => dropTag(event, "from")}
       >
+        <div className="tag-chip-list-label">From</div>
         {rule.from.map((tag, index) => (
           <span
             className="tag-chip"
             data-tag={tag}
             draggable
-            onDragStart={(event) => {
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData(
-                "text/plain",
-                JSON.stringify({ side: "from", index }),
-              );
-            }}
+            onDragStart={(event) => startTagDrag(event, { side: "from", index })}
             key={`${sortGroup}-from-${tag}-${index}`}
           >
             {tag}
             <button
               type="button"
               className="tag-chip-remove"
+              aria-label={`Remove ${tag}`}
               onClick={() => onChange({ ...rule, from: rule.from.filter((_, i) => i !== index) })}
             >
               x
@@ -1704,38 +1761,26 @@ function RuleEditor(props: {
       </div>
       <div
         className="tag-chip-list"
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => {
+        onDragOver={(event) => {
           event.preventDefault();
-          const payload = event.dataTransfer.getData("text/plain");
-          if (!payload) {
-            return;
-          }
-          const source = parseDragPayload(payload);
-          if (!source) {
-            return;
-          }
-          moveTag(source, "to");
+          event.dataTransfer.dropEffect = "move";
         }}
+        onDrop={(event) => dropTag(event, "to")}
       >
+        <div className="tag-chip-list-label">To</div>
         {rule.to.map((tag, index) => (
           <span
             className="tag-chip"
             data-tag={tag}
             draggable
-            onDragStart={(event) => {
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData(
-                "text/plain",
-                JSON.stringify({ side: "to", index }),
-              );
-            }}
+            onDragStart={(event) => startTagDrag(event, { side: "to", index })}
             key={`${sortGroup}-to-${tag}-${index}`}
           >
             {tag}
             <button
               type="button"
               className="tag-chip-remove"
+              aria-label={`Remove ${tag}`}
               onClick={() => onChange({ ...rule, to: rule.to.filter((_, i) => i !== index) })}
             >
               x
