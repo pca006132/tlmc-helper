@@ -79,6 +79,7 @@ textarea {
 
 .rewrite-split {
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  align-items: start;
 }
 
 .list {
@@ -152,6 +153,7 @@ h3 {
 .rewrite-split .card {
   display: grid;
   gap: 10px;
+  align-content: start;
 }
 
 .rewrite-rule-card {
@@ -186,6 +188,10 @@ h3 {
   max-height: 80vh;
   overflow: auto;
   padding-right: 4px;
+}
+
+.names-list {
+  align-content: start;
 }
 
 .name-row {

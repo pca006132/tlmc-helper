@@ -79,42 +79,15 @@ export function countSubstringHits(
   names: string[],
   nameCounts: Record<string, number>,
 ): Record<string, number> {
-  const out = Object.fromEntries(names.map((name) => [name, 0])) as Record<string, number>;
-  const namesByLength = bucketNamesByLength(names);
-  const candidateLengths = [...namesByLength.keys()].sort((a, b) => a - b);
-
-  for (const [value, valueCount] of Object.entries(nameCounts)) {
-    const seen = new Set<string>();
-    for (const length of candidateLengths) {
-      if (length > value.length) {
-        break;
-      }
-      const candidates = namesByLength.get(length);
-      if (!candidates) {
-        continue;
-      }
-      for (let start = 0; start <= value.length - length; start += 1) {
-        const candidate = value.slice(start, start + length);
-        if (candidates.has(candidate) && !seen.has(candidate)) {
-          out[candidate] += valueCount;
-          seen.add(candidate);
-        }
-      }
-    }
-  }
-
-  return out;
-}
-
-function bucketNamesByLength(names: string[]): Map<number, Set<string>> {
-  const out = new Map<number, Set<string>>();
+  const out: Record<string, number> = {};
   for (const name of names) {
-    if (name.length === 0) {
-      continue;
+    let count = 0;
+    for (const [value, valueCount] of Object.entries(nameCounts)) {
+      if (value.includes(name)) {
+        count += valueCount;
+      }
     }
-    const bucket = out.get(name.length) ?? new Set<string>();
-    bucket.add(name);
-    out.set(name.length, bucket);
+    out[name] = count;
   }
   return out;
 }

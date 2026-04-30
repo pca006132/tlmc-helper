@@ -69,6 +69,14 @@ export function App() {
   const selectedAlbum = structuredCircleData?.albums[structuredAlbum];
   const rewritingCircleData = editor?.rewriting[rewritingCircle];
   const rewritingRules = rewritingCircleData?.[rewritingTarget] ?? [];
+  const rewritingNameEntries = useMemo(
+    () => getNameEntriesForTarget(rewritingCircleData, rewritingTarget),
+    [rewritingCircleData, rewritingTarget],
+  );
+  const rewritingNameSuggestions = useMemo(
+    () => rewritingNameEntries.map((entry) => entry.name),
+    [rewritingNameEntries],
+  );
   const rewriteRuleDuplicateCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const rule of rewritingRules) {
@@ -619,7 +627,7 @@ export function App() {
                 <div className="card">
                   <h3>Names</h3>
                   <div className="list names-list">
-                    {getNameEntriesForTarget(rewritingCircleData, rewritingTarget).map((entry) => (
+                    {rewritingNameEntries.map((entry) => (
                       <div className="name-row" key={entry.name}>
                         <span>{entry.name}</span>
                         {entry.count !== undefined ? (
@@ -664,7 +672,7 @@ export function App() {
                         <RuleEditor
                           rule={rule}
                           sortGroup={`rule-${index}`}
-                          suggestions={getNamesForTarget(rewritingCircleData, rewritingTarget)}
+                          suggestions={rewritingNameSuggestions}
                           onRemove={() =>
                             commitRewriting((draft) => {
                               draft[rewritingCircle][rewritingTarget].splice(index, 1);
@@ -835,13 +843,6 @@ function ImportPanel(props: {
   );
 }
 
-function getNamesForTarget(
-  circle: CircleRewriting | undefined,
-  target: RewritingTarget,
-): string[] {
-  return getNameEntriesForTarget(circle, target).map((entry) => entry.name);
-}
-
 function getNameEntriesForTarget(
   circle: CircleRewriting | undefined,
   target: RewritingTarget,
@@ -987,23 +988,36 @@ function createDebugMetadata(): Record<string, Record<string, unknown>> {
       "Album artists": ["DemoCircle"],
       "Album title": "Demo Album",
       "Track number": 1,
-      "Total tracks": 2,
+      "Total tracks": 3,
       "Disc number": 1,
       "Total discs": 1,
       Genre: "Touhou",
     },
     "DemoCircle/2024.01.01 - Demo Album/02 - Theme.flac": {
       Title: "Theme",
-      Artists: ["Alice"],
+      Artists: ["vo. Alice"],
       Date: "2024.01.01",
       Year: "2024",
       "Album artists": ["DemoCircle"],
       "Album title": "Demo Album",
       "Track number": 2,
-      "Total tracks": 2,
+      "Total tracks": 3,
       "Disc number": 1,
       "Total discs": 1,
       Genre: "Arrange",
+    },
+    "DemoCircle/2024.01.01 - Demo Album/03 - Encore.flac": {
+      Title: "Encore",
+      Artists: ["Ａｌｉｃｅ"],
+      Date: "2024.01.01",
+      Year: "2024",
+      "Album artists": ["Demo Circle"],
+      "Album title": "Demo Album",
+      "Track number": 3,
+      "Total tracks": 3,
+      "Disc number": 1,
+      "Total discs": 1,
+      Genre: "Touhou",
     },
   };
 }
