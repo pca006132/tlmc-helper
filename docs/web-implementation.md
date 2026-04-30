@@ -40,8 +40,8 @@ The browser GUI lives in `web/src/gui`. It edits `structured.json` and
 `rewriting.json` in memory using the same domain model as the TypeScript CLI.
 
 Import accepts `metadata.json` as required input, plus optional `structured.json`
-and `rewriting.json`. Import and sync run in a Web Worker so the UI remains
-responsive.
+and `rewriting.json`. Import and automatic sync run in a Web Worker so the UI
+remains responsive.
 
 The workspace selector has two views:
 
@@ -73,7 +73,7 @@ The rules panel contains sortable rule cards. Each rule has two chip lists:
 button lives below the rule list.
 
 The `Audited` checkbox is available for normal circles, not `$all`. Toggling it
-immediately syncs. Only audited circles are included when generating
+queues an automatic sync. Only audited circles are included when generating
 `update-metadata.json`.
 
 ## Album Metadata View
@@ -88,9 +88,16 @@ and enables `$track numbers from order` for that disc.
 
 ## Sync And Persistence
 
-Local edits update the in-memory session immediately, but generated aggregate
-rewrite data is refreshed by sync. `Sync now` rebuilds rewriting from current
-edited structured data and existing rules so exported files match CLI behavior.
+Local edits update the in-memory session immediately and queue an automatic
+sync. Sync rebuilds generated aggregate rewrite data from current edited
+structured data and existing rules so exported files match CLI behavior. The UI
+does not block while sync is running; if another edit happens during a sync, the
+next sync is deferred until the worker finishes the current one. Download
+actions wait for the sync queue to settle before exporting.
+
+Rewrite rule cards whose `from` or `to` side is empty are considered invalid
+drafts. They remain visible for editing, but sync and update generation ignore
+them until both sides contain at least one value.
 
 Current `metadata`, `structured`, `rewriting`, and audit entries are persisted
 in IndexedDB and restored on reload. Sync merges new audit entries into the

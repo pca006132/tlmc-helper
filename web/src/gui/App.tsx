@@ -15,6 +15,7 @@ import { downloadJsonFile } from "./utils/json";
 type TabKey = "structured" | "rewriting";
 type RewritingTarget = "artists rewriting" | "album artists rewriting" | "genre rewriting";
 type AuditFilter = "all" | string;
+type SyncStatus = "idle" | "queued" | "syncing" | "error";
 type RewriteCycleSelection = {
   circle: string;
   target: RewritingTarget;
@@ -54,6 +55,7 @@ export function App() {
   const [auditFilter, setAuditFilter] = useState<AuditFilter>("all");
   const [statusMessage, setStatusMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>("idle");
   const [tab, setTab] = useState<TabKey>("structured");
   const [structuredCircle, setStructuredCircle] = useState("");
   const [structuredAlbum, setStructuredAlbum] = useState("");
@@ -73,6 +75,13 @@ export function App() {
   const highlightTimeoutRef = useRef<number | undefined>(undefined);
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
+  const editorVersionRef = useRef(0);
+  const latestEditorRef = useRef<EditorState | undefined>(undefined);
+  const syncInFlightRef = useRef(false);
+  const syncQueuedRef = useRef(false);
+  const syncRequestVersionRef = useRef(0);
+  const syncHealthyRef = useRef(true);
+  const syncIdleResolversRef = useRef(new Set<() => void>());
   const requestResolverRef = useRef(
     new Map<number, (response: WorkerResponse) => void>(),
   );
@@ -108,6 +117,9 @@ export function App() {
   const rewriteRuleDuplicateCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const rule of rewritingRules) {
+      if (isInvalidRewriteRule(rule)) {
+        continue;
+      }
       const signature = getRuleSignature(rule);
       counts.set(signature, (counts.get(signature) ?? 0) + 1);
     }
@@ -155,7 +167,7 @@ export function App() {
         if (!saved?.state) {
           return;
         }
-        setEditor(saved.state);
+        replaceEditor(saved.state);
         const firstCircle =
           Object.keys(saved.state.structured).sort((a, b) => a.localeCompare(b))[0] ?? "";
         const firstAlbum = firstCircle
@@ -183,27 +195,35 @@ export function App() {
   }, [editor, auditLog]);
 
   function commitStructured(updater: (draft: EditorState) => void): void {
-    setEditor((previous) => {
-      if (!previous) {
-        return previous;
-      }
-      const draft = structuredClone(previous);
+    updateEditor((draft) => {
       updater(draft);
-      return draft;
     });
-    setStatusMessage("Local edits updated. Press Sync now to recompute rewriting.");
   }
 
   function commitRewriting(updater: (draft: RewritingData) => void): void {
-    setEditor((previous) => {
-      if (!previous) {
-        return previous;
-      }
-      const draft = structuredClone(previous);
+    updateEditor((draft) => {
       updater(draft.rewriting);
-      return draft;
     });
-    setStatusMessage("Local edits updated. Press Sync now to recompute rewriting.");
+  }
+
+  function replaceEditor(nextEditor: EditorState): void {
+    editorVersionRef.current += 1;
+    latestEditorRef.current = nextEditor;
+    setEditor(nextEditor);
+  }
+
+  function updateEditor(updater: (draft: EditorState) => void): void {
+    const current = latestEditorRef.current;
+    if (!current) {
+      return;
+    }
+    const nextEditor = structuredClone(current);
+    updater(nextEditor);
+    editorVersionRef.current += 1;
+    latestEditorRef.current = nextEditor;
+    setEditor(nextEditor);
+    setStatusMessage("Local edits updated. Sync queued.");
+    queueSync(nextEditor);
   }
 
   useEffect(() => {
@@ -319,7 +339,7 @@ export function App() {
       const firstAlbum = firstCircle
         ? Object.keys(initial.structured[firstCircle].albums).sort((a, b) => a.localeCompare(b))[0] ?? ""
         : "";
-      setEditor(initial);
+      replaceEditor(initial);
       setAuditFilter("all");
       setStructuredCircle(firstCircle);
       setStructuredAlbum(firstAlbum);
@@ -358,7 +378,7 @@ export function App() {
     const firstAlbum = firstCircle
       ? Object.keys(initial.structured[firstCircle].albums).sort((a, b) => a.localeCompare(b))[0] ?? ""
       : "";
-    setEditor(initial);
+    replaceEditor(initial);
     setAuditFilter("all");
     setStructuredCircle(firstCircle);
     setStructuredAlbum(firstAlbum);
@@ -369,19 +389,47 @@ export function App() {
     setIsLoading(false);
   }
 
-  async function syncEditor(nextEditor: EditorState): Promise<void> {
-    if (!nextEditor) {
+  function queueSync(nextEditor: EditorState): void {
+    latestEditorRef.current = nextEditor;
+    syncQueuedRef.current = true;
+    syncHealthyRef.current = true;
+    setSyncStatus("queued");
+    void drainSyncQueue();
+  }
+
+  async function drainSyncQueue(): Promise<void> {
+    if (syncInFlightRef.current) {
       return;
     }
-    setIsLoading(true);
+    const nextEditor = latestEditorRef.current;
+    if (!syncQueuedRef.current || !nextEditor) {
+      settleSyncWaiters();
+      return;
+    }
+    syncQueuedRef.current = false;
+    syncInFlightRef.current = true;
+    syncRequestVersionRef.current = editorVersionRef.current;
+    setSyncStatus("syncing");
+    const synced = await syncEditor(nextEditor, syncRequestVersionRef.current);
+    syncInFlightRef.current = false;
+    if (syncQueuedRef.current) {
+      setSyncStatus("queued");
+      void drainSyncQueue();
+      return;
+    }
+    setSyncStatus(synced ? "idle" : "error");
+    settleSyncWaiters();
+  }
+
+  async function syncEditor(nextEditor: EditorState, requestVersion: number): Promise<boolean> {
     const response = await callWorker({
       type: "sync",
       structured: nextEditor.structured,
-      rewriting: nextEditor.rewriting,
+      rewriting: sanitizeRewritingForSync(nextEditor.rewriting),
     });
     if (!response.ok || response.type !== "sync") {
       const cycleSelection = response.ok ? undefined : parseRewriteCycleError(response.error);
-      if (cycleSelection) {
+      if (cycleSelection && requestVersion === editorVersionRef.current) {
         setTab("rewriting");
         setRewritingCircle(cycleSelection.circle);
         setRewritingTarget(cycleSelection.target);
@@ -393,41 +441,54 @@ export function App() {
           });
         }, 0);
       }
-      setStatusMessage(`Sync failed: ${response.ok ? "Unexpected response." : response.error}`);
-      setIsLoading(false);
-      return;
+      if (requestVersion === editorVersionRef.current) {
+        setStatusMessage(`Sync failed: ${response.ok ? "Unexpected response." : response.error}`);
+        setSyncStatus("error");
+        syncHealthyRef.current = false;
+      }
+      return false;
     }
-    setEditor((previous) =>
-      previous
-        ? {
-            ...previous,
-            structured: response.structured,
-            rewriting: response.rewriting,
-          }
-        : previous,
-    );
+    if (requestVersion === editorVersionRef.current) {
+      const syncedEditor: EditorState = {
+        metadata: nextEditor.metadata,
+        structured: response.structured,
+        rewriting: preserveEditableRewritingRules(response.rewriting, nextEditor.rewriting),
+      };
+      latestEditorRef.current = syncedEditor;
+      setEditor(syncedEditor);
+      setRewriteCycleSelection(undefined);
+      setStatusMessage("Sync complete.");
+      syncHealthyRef.current = true;
+    }
     setAuditLog((previous) => mergeAuditLogs(previous, normalizeAuditLog(response.audits)));
-    setRewriteCycleSelection(undefined);
-    setStatusMessage("Sync complete.");
-    setIsLoading(false);
+    return true;
   }
 
-  async function onSync(): Promise<void> {
-    if (!editor) {
-      return;
+  function settleSyncWaiters(): void {
+    const waiters = [...syncIdleResolversRef.current];
+    syncIdleResolversRef.current.clear();
+    for (const resolve of waiters) {
+      resolve();
     }
-    await syncEditor(editor);
+  }
+
+  async function waitForSync(): Promise<boolean> {
+    if (!syncInFlightRef.current && !syncQueuedRef.current) {
+      return syncHealthyRef.current;
+    }
+    await new Promise<void>((resolve) => {
+      syncIdleResolversRef.current.add(resolve);
+    });
+    return syncHealthyRef.current;
   }
 
   async function onAuditedChange(checked: boolean): Promise<void> {
     if (!editor || !rewritingCircle || rewritingCircle === "$all") {
       return;
     }
-    const nextEditor = structuredClone(editor);
-    nextEditor.rewriting[rewritingCircle].audited = checked;
-    setEditor(nextEditor);
-    setStatusMessage("Audited state updated. Syncing.");
-    await syncEditor(nextEditor);
+    commitRewriting((draft) => {
+      draft[rewritingCircle].audited = checked;
+    });
   }
 
   function onTabChange(nextTab: TabKey): void {
@@ -487,11 +548,27 @@ export function App() {
   }
 
   async function onDownloadUpdates(): Promise<void> {
-    if (!editor) {
+    const currentEditor = latestEditorRef.current;
+    if (!currentEditor) {
+      return;
+    }
+    setStatusMessage("Waiting for sync before download.");
+    if (!(await waitForSync())) {
+      setStatusMessage("Download skipped because sync failed.");
+      return;
+    }
+    const syncedEditor = latestEditorRef.current;
+    if (!syncedEditor) {
       return;
     }
     setIsLoading(true);
-    const response = await callWorker({ type: "compute-updates", state: editor });
+    const response = await callWorker({
+      type: "compute-updates",
+      state: {
+        ...syncedEditor,
+        rewriting: sanitizeRewritingForSync(syncedEditor.rewriting),
+      },
+    });
     if (!response.ok || response.type !== "compute-updates") {
       setStatusMessage(
         `Failed to compute updates: ${response.ok ? "Unexpected response." : response.error}`,
@@ -502,6 +579,34 @@ export function App() {
     downloadJsonFile("update-metadata.json", response.updates);
     setStatusMessage("Computed and downloaded update-metadata.json.");
     setIsLoading(false);
+  }
+
+  async function onDownloadStructured(): Promise<void> {
+    setStatusMessage("Waiting for sync before download.");
+    if (!(await waitForSync())) {
+      setStatusMessage("Download skipped because sync failed.");
+      return;
+    }
+    const syncedEditor = latestEditorRef.current;
+    if (!syncedEditor) {
+      return;
+    }
+    downloadJsonFile("structured.json", syncedEditor.structured);
+    setStatusMessage("Downloaded structured.json.");
+  }
+
+  async function onDownloadRewriting(): Promise<void> {
+    setStatusMessage("Waiting for sync before download.");
+    if (!(await waitForSync())) {
+      setStatusMessage("Download skipped because sync failed.");
+      return;
+    }
+    const syncedEditor = latestEditorRef.current;
+    if (!syncedEditor) {
+      return;
+    }
+    downloadJsonFile("rewriting.json", syncedEditor.rewriting);
+    setStatusMessage("Downloaded rewriting.json.");
   }
 
   return (
@@ -525,10 +630,10 @@ export function App() {
               <h2>Download</h2>
             </div>
             <div className="download-actions">
-              <button type="button" onClick={() => downloadJsonFile("structured.json", editor.structured)}>
+              <button type="button" onClick={() => void onDownloadStructured()}>
                 structured
               </button>
-              <button type="button" onClick={() => downloadJsonFile("rewriting.json", editor.rewriting)}>
+              <button type="button" onClick={() => void onDownloadRewriting()}>
                 rewriting
               </button>
               <button type="button" onClick={() => void onDownloadUpdates()}>
@@ -559,9 +664,7 @@ export function App() {
               </button>
             </div>
             <div className="editor-actions">
-              <button type="button" className="sync-compact-button" onClick={() => void onSync()}>
-                Sync
-              </button>
+              <SyncIndicator status={syncStatus} />
             </div>
           </div>
           {tab === "structured" ? (
@@ -753,7 +856,7 @@ export function App() {
                 <h2>Rewrite Rules</h2>
                 <div className="muted">{rewritingRules.length} rules in this target</div>
               </div>
-              <div className="toolbar section-toolbar rewrite-toolbar">
+              <div className="rewrite-toolbar">
                 <label>
                   Circle
                   <select value={rewritingCircle} onChange={(event) => setRewritingCircle(event.target.value)}>
@@ -1112,6 +1215,18 @@ function ImportPanel(props: {
   );
 }
 
+function SyncIndicator({ status }: { status: SyncStatus }): ReactNode {
+  const label =
+    status === "syncing"
+      ? "Syncing"
+      : status === "queued"
+        ? "Queued"
+        : status === "error"
+          ? "Sync failed"
+          : "Synced";
+  return <div className={`sync-indicator sync-indicator-${status}`}>{label}</div>;
+}
+
 function ReadonlyTagList(props: { label: string; values: string[] }) {
   return (
     <div className="field-group">
@@ -1179,6 +1294,59 @@ function mergeAuditLogs(previous: AuditLog, next: AuditLog): AuditLog {
       if (!current.includes(line)) {
         current.push(line);
       }
+    }
+  }
+  return merged;
+}
+
+const REWRITE_TARGETS = [
+  "artists rewriting",
+  "album artists rewriting",
+  "genre rewriting",
+] satisfies RewritingTarget[];
+
+function isInvalidRewriteRule(rule: RewriteRule): boolean {
+  return (
+    rule.from.filter((value) => value.trim().length > 0).length === 0 ||
+    rule.to.filter((value) => value.trim().length > 0).length === 0
+  );
+}
+
+function sanitizeRewritingForSync(rewriting: RewritingData): RewritingData {
+  const sanitized = structuredClone(rewriting);
+  for (const circle of Object.values(sanitized)) {
+    for (const target of REWRITE_TARGETS) {
+      circle[target] = circle[target]
+        .map((rule) => ({
+          from: rule.from.filter((value) => value.trim().length > 0),
+          to: rule.to.filter((value) => value.trim().length > 0),
+        }))
+        .filter((rule) => !isInvalidRewriteRule(rule));
+    }
+  }
+  return sanitized;
+}
+
+function preserveEditableRewritingRules(
+  refreshed: RewritingData,
+  source: RewritingData,
+): RewritingData {
+  const merged = structuredClone(refreshed);
+  for (const [circleName, sourceCircle] of Object.entries(source)) {
+    const targetCircle = merged[circleName];
+    if (!targetCircle) {
+      continue;
+    }
+    for (const target of REWRITE_TARGETS) {
+      targetCircle[target] = structuredClone(sourceCircle[target]);
+    }
+    if (sourceCircle.audited !== undefined) {
+      targetCircle.audited = sourceCircle.audited;
+    }
+    if (sourceCircle["default genre"] !== undefined) {
+      targetCircle["default genre"] = sourceCircle["default genre"];
+    } else {
+      delete targetCircle["default genre"];
     }
   }
   return merged;

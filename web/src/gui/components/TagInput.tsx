@@ -12,6 +12,12 @@ interface TagInputProps {
 export function TagInput({ value, suggestions, placeholder, onCommit }: TagInputProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const tagifyRef = useRef<Tagify | null>(null);
+  const onCommitRef = useRef(onCommit);
+  const isApplyingValueRef = useRef(false);
+
+  useEffect(() => {
+    onCommitRef.current = onCommit;
+  }, [onCommit]);
 
   useEffect(() => {
     if (!inputRef.current) {
@@ -25,10 +31,13 @@ export function TagInput({ value, suggestions, placeholder, onCommit }: TagInput
     tagifyRef.current = tagify;
     tagify.loadOriginalValues(value);
     tagify.on("change", () => {
+      if (isApplyingValueRef.current) {
+        return;
+      }
       const next = tagify.value
         .map((entry: TagifyTagData) => String(entry.value).trim())
         .filter((entry) => entry.length > 0);
-      onCommit(next);
+      onCommitRef.current(next);
     });
     return () => {
       tagify.destroy();
@@ -49,7 +58,9 @@ export function TagInput({ value, suggestions, placeholder, onCommit }: TagInput
     }
     const current = tagifyRef.current.value.map((entry: TagifyTagData) => String(entry.value));
     if (JSON.stringify(current) !== JSON.stringify(value)) {
+      isApplyingValueRef.current = true;
       tagifyRef.current.loadOriginalValues(value);
+      isApplyingValueRef.current = false;
     }
   }, [value]);
 

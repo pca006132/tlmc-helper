@@ -241,6 +241,11 @@ Schema:
   - `from`: string array.
   - `to`: string array.
 
+Rules with an empty `from` array or empty `to` array are invalid drafts. They
+may appear temporarily while editing in the Web App, but they are ignored when
+rules are compiled, synced, checked for cycles, or used to generate
+`update-metadata.json`.
+
 Rules are compiled into an internal lookup table before use. For each `from`
 value, the first rule that mentions it wins. Chained rules are saturated in that
 lookup, so each input name only needs one lookup at application time. Results

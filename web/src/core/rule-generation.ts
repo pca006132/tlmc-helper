@@ -265,9 +265,14 @@ function rewriteTokensAndSplitWithLookup(
 export function compileRewriteLookup(rules: RewriteRule[]): Map<string, string[]> {
   const direct = new Map<string, string[]>();
   for (const rule of rules) {
-    for (const from of rule.from) {
+    const fromValues = rule.from.filter((value) => value.trim().length > 0);
+    const toValues = rule.to.filter((value) => value.trim().length > 0);
+    if (fromValues.length === 0 || toValues.length === 0) {
+      continue;
+    }
+    for (const from of fromValues) {
       if (!direct.has(from)) {
-        direct.set(from, rule.to);
+        direct.set(from, toValues);
       }
     }
   }

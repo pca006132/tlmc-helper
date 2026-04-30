@@ -126,14 +126,19 @@ function checkRuleCycle(
   const edgeRules = new Map<string, number>();
   const seenFrom = new Set<string>();
   for (const [ruleIndex, rule] of rules.entries()) {
-    for (const from of rule.from) {
+    const fromValues = rule.from.filter((value) => value.trim().length > 0);
+    const toValues = rule.to.filter((value) => value.trim().length > 0);
+    if (fromValues.length === 0 || toValues.length === 0) {
+      continue;
+    }
+    for (const from of fromValues) {
       if (seenFrom.has(from)) {
         continue;
       }
       seenFrom.add(from);
       const edges = graph.get(from) ?? new Set<string>();
       graph.set(from, edges);
-      for (const to of rule.to) {
+      for (const to of toValues) {
         if (to !== from) {
           edges.add(to);
           edgeRules.set(edgeKey(from, to), ruleIndex);

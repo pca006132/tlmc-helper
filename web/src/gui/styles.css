@@ -292,6 +292,7 @@ label,
 .rewrite-toolbar {
   display: grid;
   grid-template-columns: minmax(280px, 0.9fr) minmax(480px, 1.8fr);
+  gap: 16px;
   align-items: end;
 }
 
@@ -368,16 +369,33 @@ label,
   gap: 8px;
 }
 
-.editor-actions button {
+.sync-indicator {
+  display: inline-flex;
+  min-width: 76px;
   min-height: 34px;
+  align-items: center;
+  justify-content: center;
   padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
-.sync-compact-button {
-  min-width: 58px;
-  color: #ffffff;
-  border-color: var(--accent-strong);
-  background: var(--accent);
+.sync-indicator-syncing,
+.sync-indicator-queued {
+  color: var(--accent-strong);
+  border-color: #cad9ff;
+  background: var(--accent-soft);
+}
+
+.sync-indicator-error {
+  color: var(--danger);
+  border-color: #f1aaa5;
+  background: var(--danger-soft);
 }
 
 .downloads-panel {
@@ -395,11 +413,6 @@ label,
   width: 100%;
   min-height: 34px;
   padding: 6px 10px;
-}
-
-.sync-compact-button:hover {
-  border-color: var(--accent-strong);
-  background: var(--accent-strong);
 }
 
 .editor-view {
@@ -916,8 +929,8 @@ label,
     justify-content: stretch;
   }
 
-  .editor-actions button {
-    flex: 1 1 120px;
+  .sync-indicator {
+    width: 100%;
   }
 
   label,
