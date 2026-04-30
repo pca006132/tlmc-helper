@@ -167,7 +167,6 @@ export function App() {
         setStructuredAlbum(firstAlbum);
         setRewritingCircle(firstNonGlobalRewritingCircle(saved.state.rewriting) || firstCircle);
         setAuditLog(normalizeAuditLog(saved.audits));
-        setStatusMessage("Restored previous session.");
       } catch {
         setStatusMessage("Failed to restore previous session.");
       }
@@ -338,6 +337,12 @@ export function App() {
   }
 
   async function onLoadDebugSample(): Promise<void> {
+    if (
+      editor &&
+      !window.confirm("Load the debug sample? This will replace the current workspace data.")
+    ) {
+      return;
+    }
     setIsLoading(true);
     const response = await callWorker({
       type: "import",
@@ -506,92 +511,106 @@ export function App() {
           <div className="spinner" />
         </div>
       ) : null}
-      <div className="panel">
-        <h2>Import</h2>
-        <ImportPanel onImport={onImport} onLoadDebugSample={onLoadDebugSample} />
-        {statusMessage ? <div className="muted">{statusMessage}</div> : null}
+      <div className={`app-top${editor ? "" : " app-top-single"}`}>
+        <div className="panel">
+          <div className="panel-header">
+            <h2>Import</h2>
+            {statusMessage ? <div className="status-pill">{statusMessage}</div> : null}
+          </div>
+          <ImportPanel onImport={onImport} onLoadDebugSample={onLoadDebugSample} />
+        </div>
+        {editor ? (
+          <div className="panel downloads-panel">
+            <div className="panel-header">
+              <h2>Download</h2>
+            </div>
+            <div className="download-actions">
+              <button type="button" onClick={() => downloadJsonFile("structured.json", editor.structured)}>
+                structured
+              </button>
+              <button type="button" onClick={() => downloadJsonFile("rewriting.json", editor.rewriting)}>
+                rewriting
+              </button>
+              <button type="button" onClick={() => void onDownloadUpdates()}>
+                updates
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {editor && (
-        <>
-          <div className="panel">
-            <h2>Workspace</h2>
-            <div className="toolbar workspace-toolbar">
-              <div className="row">
-                <label>
-                  <select value={tab} onChange={(event) => onTabChange(event.target.value as TabKey)}>
-                    <option value="structured">Album Metadata</option>
-                    <option value="rewriting">Rewrite Rules</option>
-                  </select>
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void onSync()}
-                >
-                  Sync now
-                </button>
-              </div>
-              <div className="full-row">
-                <div className="field-label">Download</div>
-                <div className="row row-tight">
-                  <button type="button" onClick={() => downloadJsonFile("structured.json", editor.structured)}>
-                    structured.json
-                  </button>
-                  <button type="button" onClick={() => downloadJsonFile("rewriting.json", editor.rewriting)}>
-                    rewriting.json
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void onDownloadUpdates()}
-                  >
-                    update-metadata.json
-                  </button>
-                </div>
-              </div>
+        <div className="panel editor-panel">
+          <div className="editor-topbar">
+            <div className="editor-tabs" role="tablist" aria-label="Workspace view">
+              <button
+                type="button"
+                className={tab === "structured" ? "editor-tab editor-tab-active" : "editor-tab"}
+                onClick={() => onTabChange("structured")}
+              >
+                Album Metadata
+              </button>
+              <button
+                type="button"
+                className={tab === "rewriting" ? "editor-tab editor-tab-active" : "editor-tab"}
+                onClick={() => onTabChange("rewriting")}
+              >
+                Rewrite Rules
+              </button>
+            </div>
+            <div className="editor-actions">
+              <button type="button" className="sync-compact-button" onClick={() => void onSync()}>
+                Sync
+              </button>
             </div>
           </div>
-
           {tab === "structured" ? (
-            <div className="panel">
-              <h2>Album Metadata</h2>
-              <div className="row">
-                <label>
-                  Circle
-                  <select
-                    value={structuredCircle}
-                    onChange={(event) => {
-                      const circle = event.target.value;
-                      setStructuredCircle(circle);
-                      const nextAlbum =
-                        Object.keys(editor.structured[circle]?.albums ?? {})
-                          .sort((a, b) => a.localeCompare(b))[0] ?? "";
-                      setStructuredAlbum(nextAlbum);
-                    }}
-                  >
-                    {Object.keys(editor.structured)
-                      .sort((a, b) => a.localeCompare(b))
-                      .map((circle) => (
-                        <option key={circle} value={circle}>
-                          {circle}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <label>
-                  Album
-                  <select value={structuredAlbum} onChange={(event) => setStructuredAlbum(event.target.value)}>
-                    {albumNames.map((albumName) => (
-                      <option key={albumName} value={albumName}>
-                        {albumName}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+            <div className="editor-view metadata-panel">
+              <div className="panel-header">
+                <h2>Album Metadata</h2>
+                <div className="muted">{albumNames.length} albums in this circle</div>
               </div>
+              <div className="metadata-layout">
+                <aside className="metadata-sidebar">
+                  <div className="toolbar section-toolbar metadata-nav">
+                    <label>
+                      Circle
+                      <select
+                        value={structuredCircle}
+                        onChange={(event) => {
+                          const circle = event.target.value;
+                          setStructuredCircle(circle);
+                          const nextAlbum =
+                            Object.keys(editor.structured[circle]?.albums ?? {})
+                              .sort((a, b) => a.localeCompare(b))[0] ?? "";
+                          setStructuredAlbum(nextAlbum);
+                        }}
+                      >
+                        {Object.keys(editor.structured)
+                          .sort((a, b) => a.localeCompare(b))
+                          .map((circle) => (
+                            <option key={circle} value={circle}>
+                              {circle}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label>
+                      Album
+                      <select value={structuredAlbum} onChange={(event) => setStructuredAlbum(event.target.value)}>
+                        {albumNames.map((albumName) => (
+                          <option key={albumName} value={albumName}>
+                            {albumName}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </aside>
 
-              {selectedAlbum && structuredCircleData && (
-                <div className="list">
-                  <label>
+                {selectedAlbum && structuredCircleData && (
+                  <div className="list metadata-editor">
+                  <label className="wide-field">
                     <div className="field-label">Album name</div>
                     <input
                       className="grow"
@@ -646,35 +665,37 @@ export function App() {
 
                   <div className="list" ref={discListRef}>
                     {selectedAlbum.discs.map((disc, discIndex) => (
-                      <div className="card" key={`${discIndex}-${Object.keys(disc.tracks).join(":")}`}>
-                        <label>
-                          Disc subtitle
-                          <input
-                            defaultValue={disc.$subtitle ?? ""}
-                            onBlur={(event) =>
-                              commitStructured((draft) => {
-                                const value = event.currentTarget.value.trim();
-                                draft.structured[structuredCircle].albums[structuredAlbum].discs[
-                                  discIndex
-                                ].$subtitle = value || undefined;
-                              })
-                            }
-                          />
-                        </label>
-                        <label className="row row-tight">
-                          <input
-                            type="checkbox"
-                            checked={disc["$track numbers from order"] === true}
-                            onChange={(event) =>
-                              commitStructured((draft) => {
-                                draft.structured[structuredCircle].albums[structuredAlbum].discs[
-                                  discIndex
-                                ]["$track numbers from order"] = event.currentTarget.checked;
-                              })
-                            }
-                          />
-                          <span>Update track numbers from track order</span>
-                        </label>
+                      <div className="disc-section" key={`${discIndex}-${Object.keys(disc.tracks).join(":")}`}>
+                        <div className="disc-header">
+                          <label>
+                            Disc subtitle
+                            <input
+                              defaultValue={disc.$subtitle ?? ""}
+                              onBlur={(event) =>
+                                commitStructured((draft) => {
+                                  const value = event.currentTarget.value.trim();
+                                  draft.structured[structuredCircle].albums[structuredAlbum].discs[
+                                    discIndex
+                                  ].$subtitle = value || undefined;
+                                })
+                              }
+                            />
+                          </label>
+                          <label className="checkbox-label">
+                            <input
+                              type="checkbox"
+                              checked={disc["$track numbers from order"] === true}
+                              onChange={(event) =>
+                                commitStructured((draft) => {
+                                  draft.structured[structuredCircle].albums[structuredAlbum].discs[
+                                    discIndex
+                                  ]["$track numbers from order"] = event.currentTarget.checked;
+                                })
+                              }
+                            />
+                            <span>Update track numbers from track order</span>
+                          </label>
+                        </div>
                         <DiscTrackList
                           disc={disc}
                           discIndex={discIndex}
@@ -722,13 +743,17 @@ export function App() {
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
-            <div className="panel">
-              <h2>Rewrite Rules</h2>
-              <div className="toolbar">
+            <div className="editor-view">
+              <div className="panel-header">
+                <h2>Rewrite Rules</h2>
+                <div className="muted">{rewritingRules.length} rules in this target</div>
+              </div>
+              <div className="toolbar section-toolbar rewrite-toolbar">
                 <label>
                   Circle
                   <select value={rewritingCircle} onChange={(event) => setRewritingCircle(event.target.value)}>
@@ -741,33 +766,49 @@ export function App() {
                       ))}
                   </select>
                 </label>
-                <label>
-                  Rewrite target
-                  <select
-                    value={rewritingTarget}
-                    onChange={(event) => setRewritingTarget(event.target.value as RewritingTarget)}
-                  >
-                    <option value="artists rewriting">artists rewriting</option>
-                    <option value="album artists rewriting">album artists rewriting</option>
-                    <option value="genre rewriting">genre rewriting</option>
-                  </select>
-                </label>
-                {rewritingCircle !== "$all" && rewritingCircleData ? (
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={rewritingCircleData.audited === true}
-                      onChange={(event) =>
-                        void onAuditedChange(event.currentTarget.checked)
-                      }
-                    />
-                    <span>Audited</span>
-                  </label>
-                ) : null}
+                <div className="rewrite-toolbar-main">
+                  <div className="rewrite-target-tabs" role="tablist" aria-label="Rewrite target">
+                    {(
+                      [
+                        "artists rewriting",
+                        "album artists rewriting",
+                        "genre rewriting",
+                      ] satisfies RewritingTarget[]
+                    ).map((target) => (
+                      <button
+                        type="button"
+                        className={
+                          rewritingTarget === target
+                            ? "rewrite-target-tab rewrite-target-tab-active"
+                            : "rewrite-target-tab"
+                        }
+                        onClick={() => setRewritingTarget(target)}
+                        key={target}
+                      >
+                        {target.replace(" rewriting", "")}
+                      </button>
+                    ))}
+                  </div>
+                  {rewritingCircle !== "$all" && rewritingCircleData ? (
+                    <label className="checkbox-label">
+                      <input
+                        type="checkbox"
+                        checked={rewritingCircleData.audited === true}
+                        onChange={(event) =>
+                          void onAuditedChange(event.currentTarget.checked)
+                        }
+                      />
+                      <span>Audited</span>
+                    </label>
+                  ) : null}
+                </div>
               </div>
               <div className="split rewrite-split">
-                <div className="card">
-                  <h3>{rewritingNameHeader}</h3>
+                <div className="section-pane names-pane">
+                  <div className="pane-header">
+                    <h3>{rewritingNameHeader}</h3>
+                    <span className="count-badge">{rewritingNameEntries.length}</span>
+                  </div>
                   <div className="list names-list">
                     {rewritingNameEntries.map((entry) => (
                       <div
@@ -783,9 +824,12 @@ export function App() {
                     ))}
                   </div>
                 </div>
-                <div className="card">
-                  <h3>Rules</h3>
-                  <div className="muted">
+                <div className="section-pane rules-pane">
+                  <div className="pane-header">
+                    <h3>Rules</h3>
+                    <span className="count-badge">{rewritingRules.length}</span>
+                  </div>
+                  <div className="muted pane-copy">
                     Drag rule cards to reorder. In each rule, the first name list is `from` and the second
                     list is `to`. You can drag names between the two lists.
                   </div>
@@ -848,9 +892,16 @@ export function App() {
               </div>
             </div>
           )}
+        </div>
+      )}
+      {editor && (
+        <>
           <div className="panel">
-            <h2>Audit log</h2>
-            <div className="row row-align-end">
+            <div className="panel-header">
+              <h2>Audit log</h2>
+              <div className="muted">{visibleAuditLines.length} visible entries</div>
+            </div>
+            <div className="toolbar section-toolbar">
               <label>
                 Filter
                 <select
@@ -904,20 +955,47 @@ function TrackEditor(props: {
     onCommit,
   } = props;
   return (
-    <div className="card">
-      <div className="muted">{trackPath}</div>
-      <label>
-        <div className="field-label">Title</div>
-        <input
-          defaultValue={track.title}
-          onBlur={(event) => onCommit({ ...track, title: event.currentTarget.value })}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              onCommit({ ...track, title: event.currentTarget.value });
-            }
-          }}
-        />
-      </label>
+    <div className="card track-card">
+      <div className="track-path">{trackPath}</div>
+      <div className="track-title-row">
+        <label className="track-title-field">
+          <div className="field-label">Title</div>
+          <input
+            defaultValue={track.title}
+            onBlur={(event) => onCommit({ ...track, title: event.currentTarget.value })}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                onCommit({ ...track, title: event.currentTarget.value });
+              }
+            }}
+          />
+        </label>
+        <div className="track-number-date-row">
+          <label>
+            <div className="field-label">Track number</div>
+            <input
+              type="number"
+              defaultValue={track["track number"] ?? ""}
+              onBlur={(event) => {
+                const raw = event.currentTarget.value.trim();
+                const parsed = raw ? Number(raw) : undefined;
+                onCommit({
+                  ...track,
+                  "track number":
+                    parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
+                });
+              }}
+            />
+          </label>
+          <label>
+            <div className="field-label">Date</div>
+            <input
+              defaultValue={track.date ?? ""}
+              onBlur={(event) => onCommit({ ...track, date: event.currentTarget.value || undefined })}
+            />
+          </label>
+        </div>
+      </div>
       <div className="metadata-field-pair">
         <div className="field-group">
           <div className="field-label">Artists</div>
@@ -930,31 +1008,6 @@ function TrackEditor(props: {
           </div>
         </div>
         <ReadonlyTagList label="Artists (after rewriting)" values={artistsAfterRewriting} />
-      </div>
-      <div className="row">
-        <label>
-          <div className="field-label">Track number</div>
-          <input
-            type="number"
-            defaultValue={track["track number"] ?? ""}
-            onBlur={(event) => {
-              const raw = event.currentTarget.value.trim();
-              const parsed = raw ? Number(raw) : undefined;
-              onCommit({
-                ...track,
-                "track number":
-                  parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
-              });
-            }}
-          />
-        </label>
-        <label>
-          <div className="field-label">Date</div>
-          <input
-            defaultValue={track.date ?? ""}
-            onBlur={(event) => onCommit({ ...track, date: event.currentTarget.value || undefined })}
-          />
-        </label>
       </div>
       <div className="metadata-field-pair">
         <label>
@@ -985,25 +1038,62 @@ function ImportPanel(props: {
   const metadataRef = useRef<HTMLInputElement | null>(null);
   const structuredRef = useRef<HTMLInputElement | null>(null);
   const rewritingRef = useRef<HTMLInputElement | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState({
+    metadata: "",
+    structured: "",
+    rewriting: "",
+  });
+  const updateSelectedFile = (
+    key: "metadata" | "structured" | "rewriting",
+    input: HTMLInputElement | null,
+  ): void => {
+    setSelectedFiles((previous) => ({
+      ...previous,
+      [key]: input?.files?.[0]?.name ?? "",
+    }));
+  };
   return (
-    <div className="list">
-      <div className="row">
-        <label>
-          metadata.json
-          <input ref={metadataRef} type="file" accept=".json" />
+    <div className="import-panel">
+      <div className="import-file-grid">
+        <label className="file-picker">
+          <input
+            ref={metadataRef}
+            className="visually-hidden"
+            type="file"
+            accept=".json"
+            onChange={(event) => updateSelectedFile("metadata", event.currentTarget)}
+          />
+          <span className="file-picker-box">
+            {selectedFiles.metadata || "Select metadata.json"}
+          </span>
         </label>
-        <label>
-          structured.json (optional)
-          <input ref={structuredRef} type="file" accept=".json" />
+        <label className="file-picker">
+          <input
+            ref={structuredRef}
+            className="visually-hidden"
+            type="file"
+            accept=".json"
+            onChange={(event) => updateSelectedFile("structured", event.currentTarget)}
+          />
+          <span className="file-picker-box">
+            {selectedFiles.structured || "Select structured.json"}
+          </span>
         </label>
-        <label>
-          rewriting.json (optional)
-          <input ref={rewritingRef} type="file" accept=".json" />
+        <label className="file-picker">
+          <input
+            ref={rewritingRef}
+            className="visually-hidden"
+            type="file"
+            accept=".json"
+            onChange={(event) => updateSelectedFile("rewriting", event.currentTarget)}
+          />
+          <span className="file-picker-box">
+            {selectedFiles.rewriting || "Select rewriting.json"}
+          </span>
         </label>
-      </div>
-      <div className="row row-align-end">
         <button
           type="button"
+          className="import-primary-button"
           onClick={() =>
             props.onImport({
               metadata: metadataRef.current?.files?.[0],
@@ -1015,7 +1105,7 @@ function ImportPanel(props: {
           Import
         </button>
         <button type="button" onClick={() => void props.onLoadDebugSample()}>
-          Load debug sample
+          Debug sample
         </button>
       </div>
     </div>
@@ -1028,8 +1118,8 @@ function ReadonlyTagList(props: { label: string; values: string[] }) {
       <div className="field-label">{props.label}</div>
       <div className="readonly-tag-list" aria-readonly="true">
         {props.values.length > 0 ? (
-          props.values.map((value) => (
-            <span className="readonly-tag" key={value}>
+          props.values.map((value, index) => (
+            <span className="readonly-tag" key={`${value}-${index}`}>
               {value}
             </span>
           ))
