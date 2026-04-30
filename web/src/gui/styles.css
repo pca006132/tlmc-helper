@@ -919,10 +919,13 @@ label,
   .import-file-grid,
   .editor-topbar,
   .rewrite-toolbar-main,
-  .rewrite-target-tabs,
   .track-title-row,
   .track-number-date-row {
     grid-template-columns: 1fr;
+  }
+
+  .rewrite-target-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .editor-actions {
