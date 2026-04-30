@@ -29,6 +29,7 @@ export interface CircleStructured {
 }
 
 export interface CircleRewriting {
+  audited?: boolean;
   // name -> count
   "all album artists": Record<string, number>;
   "album artists rewriting": RewriteRule[];

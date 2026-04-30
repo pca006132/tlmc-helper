@@ -185,6 +185,7 @@ special `$all` entry for global rules and global aggregate lists.
 ```json
 {
   "Circle": {
+    "audited": false,
     "all album artists": {
       "Circle": 10
     },
@@ -227,6 +228,8 @@ Schema:
 
 - Top level: object keyed by circle name, plus optional/special `$all`.
 - Circle rewriting object:
+  - `audited`: boolean. Only audited circles are included when generating
+    `update-metadata.json`.
   - `all album artists`: object mapping displayed album-artist name to count.
   - `album artists rewriting`: rewrite rules for album artists.
   - `all artists`: object mapping displayed track-artist name to count.

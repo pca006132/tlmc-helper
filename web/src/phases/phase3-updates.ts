@@ -20,8 +20,12 @@ export function runUpdateStage(
   applyRewritesToStructured(structured, rewritingData);
   applyGenreRewritesToStructured(structured, rewritingData);
   const desired = materializeMetadataFromStructured(structured, metadata);
+  const auditedTrackPaths = collectAuditedTrackPaths(structured, rewritingData);
   const updates: UpdateMap = {};
   for (const [trackPath, desiredFields] of Object.entries(desired)) {
+    if (!auditedTrackPaths.has(trackPath)) {
+      continue;
+    }
     const originalFields = metadata[trackPath];
     if (!originalFields) {
       continue;
@@ -32,6 +36,26 @@ export function runUpdateStage(
     }
   }
   return updates;
+}
+
+function collectAuditedTrackPaths(
+  structured: StructuredData,
+  rewriting: RewritingData,
+): Set<string> {
+  const out = new Set<string>();
+  for (const [circleName, circleData] of Object.entries(structured)) {
+    if (rewriting[circleName]?.audited !== true) {
+      continue;
+    }
+    for (const album of Object.values(circleData.albums)) {
+      for (const disc of album.discs) {
+        for (const trackPath of Object.keys(disc.tracks)) {
+          out.add(trackPath);
+        }
+      }
+    }
+  }
+  return out;
 }
 
 function applyGenreRewritesToStructured(

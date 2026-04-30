@@ -215,6 +215,7 @@ export function buildRewritingFromStructured(
     }
 
     out[circleName] = {
+      audited: existingCircle?.audited === true,
       "all album artists": countSubstringHits(
         Object.keys(rewrittenAlbumArtistNameCounts),
         combinedNameCounts,
@@ -329,6 +330,7 @@ function buildGlobalRewritingEntry(
   }
 
   return {
+    ...(existingAll?.audited === true ? { audited: true } : {}),
     "all album artists": countSubstringHits(
       Object.keys(rewrittenAlbumArtistNameCounts),
       combinedNameCounts,

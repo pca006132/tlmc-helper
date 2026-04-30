@@ -151,6 +151,7 @@ describe("analyze-albums TypeScript parity", () => {
         existingRewriting: {
           CircleA: {
             ...emptyCircleRewriting(),
+            audited: true,
             "artists rewriting": [{ from: ["Old"], to: ["New"] }],
             "album artists rewriting": [{ from: ["Old"], to: ["New"] }],
           },
@@ -188,6 +189,7 @@ describe("analyze-albums TypeScript parity", () => {
     const rewriting: RewritingData = {
       CircleA: {
         ...emptyCircleRewriting(),
+        audited: true,
         "artists rewriting": [
           { from: ["Old"], to: ["Middle"] },
           { from: ["Middle"], to: ["New"] },
@@ -220,6 +222,52 @@ describe("analyze-albums TypeScript parity", () => {
         },
       }, logger),
     ).toThrow(/rewrite cycle/);
+  });
+
+  test("update generation only includes audited circles", () => {
+    const metadata: MetadataMap = {
+      "CircleA/2024.01.01 Album/01.mp3": {
+        Title: "Song A",
+        Artists: ["OldA"],
+        "Album artists": ["OldA"],
+        "Track number": 1,
+      },
+      "CircleB/2024.01.01 Album/01.mp3": {
+        Title: "Song B",
+        Artists: ["OldB"],
+        "Album artists": ["OldB"],
+        "Track number": 1,
+      },
+    };
+    const logger = new CaptureLogger();
+    const phase1 = runPhase1(
+      {
+        metadata,
+        existingRewriting: {
+          CircleA: {
+            ...emptyCircleRewriting(),
+            audited: true,
+            "artists rewriting": [{ from: ["OldA"], to: ["NewA"] }],
+            "album artists rewriting": [{ from: ["OldA"], to: ["NewA"] }],
+          },
+          CircleB: {
+            ...emptyCircleRewriting(),
+            "artists rewriting": [{ from: ["OldB"], to: ["NewB"] }],
+            "album artists rewriting": [{ from: ["OldB"], to: ["NewB"] }],
+          },
+          $all: emptyCircleRewriting(),
+        },
+      },
+      logger,
+    );
+
+    const phase3 = runPhase3(
+      { metadata, structured: phase1.structured, rewriting: phase1.rewriting },
+      logger,
+    );
+
+    expect(Object.keys(phase3.updates)).toEqual(["CircleA/2024.01.01 Album/01.mp3"]);
+    expect(phase3.updates["CircleA/2024.01.01 Album/01.mp3"].Artists).toEqual(["NewA"]);
   });
 
   test("uses global known names for aggressive split generation", () => {
@@ -386,6 +434,7 @@ describe("analyze-albums TypeScript parity", () => {
       const rewriting: RewritingData = {
         CircleA: {
           ...emptyCircleRewriting(),
+          audited: true,
           "artists rewriting": [{ from: ["OldA"], to: ["NewA"] }],
           "album artists rewriting": [{ from: ["OldA"], to: ["NewA"] }],
         },
@@ -427,6 +476,7 @@ describe("analyze-albums TypeScript parity", () => {
     };
     const logger = new CaptureLogger();
     const phase1 = runPhase1({ metadata }, logger);
+    phase1.rewriting.CircleA.audited = true;
     const structured = structuredClone(phase1.structured);
     const album = structured.CircleA.albums["Folder Name"];
     delete structured.CircleA.albums["Folder Name"];

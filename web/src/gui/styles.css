@@ -117,6 +117,13 @@ textarea {
   min-width: 180px;
 }
 
+.metadata-field-pair {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
 .track-header,
 .rule-header {
   display: flex;
@@ -132,6 +139,20 @@ label {
   font-size: 13px;
   font-weight: 600;
   line-height: 1.25;
+}
+
+.checkbox-label {
+  display: flex;
+  gap: 8px;
+  min-width: auto;
+  align-items: center;
+  padding-bottom: 9px;
+}
+
+.checkbox-label input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
 }
 
 h2,
@@ -199,6 +220,7 @@ h3 {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: baseline;
+  cursor: default;
 }
 
 .name-row span:first-child {
@@ -209,6 +231,15 @@ h3 {
   color: #687386;
   font-variant-numeric: tabular-nums;
   font-size: 12px;
+}
+
+.metadata-field-highlight,
+.metadata-field-highlight .tagify {
+  background: #dcfce7;
+  border-color: #4ade80;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease;
 }
 
 .validation-hint {
@@ -254,6 +285,29 @@ h3 {
   color: #1f3f75;
   padding: 0;
   cursor: pointer;
+}
+
+.readonly-tag-list {
+  min-height: 40px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  border: 1px solid #cfd6df;
+  border-radius: 8px;
+  padding: 6px;
+  background: #f8fafc;
+}
+
+.readonly-tag {
+  display: inline-flex;
+  align-items: center;
+  overflow-wrap: anywhere;
+  color: #374151;
+  background: #e9eef5;
+  border: 1px solid #d4dbe7;
+  border-radius: 999px;
+  padding: 4px 8px;
 }
 
 .overlay {
@@ -322,6 +376,11 @@ h3 {
   .toolbar,
   .row,
   .list {
+    gap: 8px;
+  }
+
+  .metadata-field-pair {
+    grid-template-columns: 1fr;
     gap: 8px;
   }
 

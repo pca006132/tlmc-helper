@@ -4,8 +4,10 @@ import type {
   CircleRewriting,
   RewritingData,
   RewriteRule,
+  StructuredData,
   TrackStructured,
 } from "../domain/models.js";
+import { compileRewriteLookup } from "../core/rule-generation.js";
 import { TagInput } from "./components/TagInput";
 import type { AuditLog, EditorState } from "./state/editor";
 import { downloadJsonFile } from "./utils/json";
@@ -18,6 +20,18 @@ type RewriteCycleSelection = {
   target: RewritingTarget;
   rules: Set<number>;
 };
+type HighlightTarget =
+  | {
+      circle: string;
+      album: string;
+      field: "album artists";
+    }
+  | {
+      circle: string;
+      album: string;
+      trackPath: string;
+      field: "artists" | "genre";
+    };
 type WorkerResponse =
   | { id: number; ok: true; type: "import"; state: EditorState; audits: AuditLog }
   | {
@@ -48,11 +62,15 @@ export function App() {
     useState<RewritingTarget>("artists rewriting");
   const [rewriteCycleSelection, setRewriteCycleSelection] =
     useState<RewriteCycleSelection | undefined>(undefined);
+  const [highlightTarget, setHighlightTarget] = useState<HighlightTarget | undefined>(
+    undefined,
+  );
 
   const discListRef = useRef<HTMLDivElement | null>(null);
   const rulesRef = useRef<HTMLDivElement | null>(null);
   const discSortableRef = useRef<Sortable | null>(null);
   const ruleSortableRef = useRef<Sortable | null>(null);
+  const highlightTimeoutRef = useRef<number | undefined>(undefined);
   const workerRef = useRef<Worker | null>(null);
   const requestIdRef = useRef(0);
   const requestResolverRef = useRef(
@@ -68,6 +86,15 @@ export function App() {
   );
   const selectedAlbum = structuredCircleData?.albums[structuredAlbum];
   const rewritingCircleData = editor?.rewriting[rewritingCircle];
+  const selectedAlbumArtistsAfterRewriting =
+    editor && selectedAlbum
+      ? rewriteMetadataValues(
+          selectedAlbum["album artists"],
+          editor.rewriting,
+          structuredCircle,
+          "album artists rewriting",
+        )
+      : [];
   const rewritingRules = rewritingCircleData?.[rewritingTarget] ?? [];
   const rewritingNameEntries = useMemo(
     () => getNameEntriesForTarget(rewritingCircleData, rewritingTarget),
@@ -77,6 +104,7 @@ export function App() {
     () => rewritingNameEntries.map((entry) => entry.name),
     [rewritingNameEntries],
   );
+  const rewritingNameHeader = getNameHeaderForTarget(rewritingTarget);
   const rewriteRuleDuplicateCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const rule of rewritingRules) {
@@ -114,6 +142,9 @@ export function App() {
     return () => {
       worker.terminate();
       workerRef.current = null;
+      if (highlightTimeoutRef.current !== undefined) {
+        window.clearTimeout(highlightTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -134,7 +165,7 @@ export function App() {
           : "";
         setStructuredCircle(firstCircle);
         setStructuredAlbum(firstAlbum);
-        setRewritingCircle(saved.state.rewriting.$all ? "$all" : firstCircle);
+        setRewritingCircle(firstNonGlobalRewritingCircle(saved.state.rewriting) || firstCircle);
         setAuditLog(normalizeAuditLog(saved.audits));
         setStatusMessage("Restored previous session.");
       } catch {
@@ -293,7 +324,7 @@ export function App() {
       setAuditFilter("all");
       setStructuredCircle(firstCircle);
       setStructuredAlbum(firstAlbum);
-      setRewritingCircle(initial.rewriting.$all ? "$all" : firstCircle);
+      setRewritingCircle(firstNonGlobalRewritingCircle(initial.rewriting) || firstCircle);
       setRewriteCycleSelection(undefined);
       setAuditLog(normalizeAuditLog(response.audits));
       setStatusMessage("Import success.");
@@ -326,22 +357,22 @@ export function App() {
     setAuditFilter("all");
     setStructuredCircle(firstCircle);
     setStructuredAlbum(firstAlbum);
-    setRewritingCircle(initial.rewriting.$all ? "$all" : firstCircle);
+    setRewritingCircle(firstNonGlobalRewritingCircle(initial.rewriting) || firstCircle);
     setRewriteCycleSelection(undefined);
     setStatusMessage("Loaded debug sample.");
     setAuditLog(normalizeAuditLog(response.audits));
     setIsLoading(false);
   }
 
-  async function onSync(): Promise<void> {
-    if (!editor) {
+  async function syncEditor(nextEditor: EditorState): Promise<void> {
+    if (!nextEditor) {
       return;
     }
     setIsLoading(true);
     const response = await callWorker({
       type: "sync",
-      structured: editor.structured,
-      rewriting: editor.rewriting,
+      structured: nextEditor.structured,
+      rewriting: nextEditor.rewriting,
     });
     if (!response.ok || response.type !== "sync") {
       const cycleSelection = response.ok ? undefined : parseRewriteCycleError(response.error);
@@ -370,10 +401,84 @@ export function App() {
           }
         : previous,
     );
-    setAuditLog(normalizeAuditLog(response.audits));
+    setAuditLog((previous) => mergeAuditLogs(previous, normalizeAuditLog(response.audits)));
     setRewriteCycleSelection(undefined);
     setStatusMessage("Sync complete.");
     setIsLoading(false);
+  }
+
+  async function onSync(): Promise<void> {
+    if (!editor) {
+      return;
+    }
+    await syncEditor(editor);
+  }
+
+  async function onAuditedChange(checked: boolean): Promise<void> {
+    if (!editor || !rewritingCircle || rewritingCircle === "$all") {
+      return;
+    }
+    const nextEditor = structuredClone(editor);
+    nextEditor.rewriting[rewritingCircle].audited = checked;
+    setEditor(nextEditor);
+    setStatusMessage("Audited state updated. Syncing.");
+    await syncEditor(nextEditor);
+  }
+
+  function onTabChange(nextTab: TabKey): void {
+    setTab(nextTab);
+    if (!editor) {
+      return;
+    }
+    if (nextTab === "rewriting") {
+      if (structuredCircle && editor.rewriting[structuredCircle]) {
+        setRewritingCircle(structuredCircle);
+        return;
+      }
+      const firstCircle = firstNonGlobalRewritingCircle(editor.rewriting);
+      if (firstCircle) {
+        setRewritingCircle(firstCircle);
+      }
+      return;
+    }
+    if (rewritingCircle && rewritingCircle !== "$all" && editor.structured[rewritingCircle]) {
+      setStructuredCircle(rewritingCircle);
+      setStructuredAlbum(firstAlbumName(editor.structured, rewritingCircle));
+    }
+  }
+
+  function revealRewrittenName(name: string): void {
+    if (!editor) {
+      return;
+    }
+    const target = findFirstRewrittenNameTarget(
+      editor.structured,
+      editor.rewriting,
+      rewritingCircle,
+      rewritingTarget,
+      name,
+    );
+    if (!target) {
+      setStatusMessage(`No metadata field found for ${name}.`);
+      return;
+    }
+    setTab("structured");
+    setStructuredCircle(target.circle);
+    setStructuredAlbum(target.album);
+    setHighlightTarget(target);
+    if (highlightTimeoutRef.current !== undefined) {
+      window.clearTimeout(highlightTimeoutRef.current);
+    }
+    highlightTimeoutRef.current = window.setTimeout(() => {
+      setHighlightTarget(undefined);
+      highlightTimeoutRef.current = undefined;
+    }, 2000);
+    window.setTimeout(() => {
+      document.querySelector(".metadata-field-highlight")?.scrollIntoView({
+        block: "center",
+        behavior: "smooth",
+      });
+    }, 0);
   }
 
   async function onDownloadUpdates(): Promise<void> {
@@ -414,9 +519,9 @@ export function App() {
             <div className="toolbar workspace-toolbar">
               <div className="row">
                 <label>
-                  <select value={tab} onChange={(event) => setTab(event.target.value as TabKey)}>
-                    <option value="structured">structured.json</option>
-                    <option value="rewriting">rewriting.json</option>
+                  <select value={tab} onChange={(event) => onTabChange(event.target.value as TabKey)}>
+                    <option value="structured">Album Metadata</option>
+                    <option value="rewriting">Rewrite Rules</option>
                   </select>
                 </label>
                 <button
@@ -510,16 +615,32 @@ export function App() {
                     />
                   </label>
 
-                  <div className="field-group">
-                    <div className="field-label">Album artists</div>
-                    <TagInput
-                      value={selectedAlbum["album artists"]}
-                      suggestions={Object.keys(editor.rewriting[structuredCircle]?.["all album artists"] ?? {})}
-                      onCommit={(next) =>
-                        commitStructured((draft) => {
-                          draft.structured[structuredCircle].albums[structuredAlbum]["album artists"] = next;
-                        })
-                      }
+                  <div className="metadata-field-pair">
+                    <div className="field-group">
+                      <div className="field-label">Album artists</div>
+                      <div
+                        className={
+                          highlightTarget?.circle === structuredCircle &&
+                          highlightTarget.album === structuredAlbum &&
+                          highlightTarget.field === "album artists"
+                            ? "metadata-field-highlight"
+                            : undefined
+                        }
+                      >
+                        <TagInput
+                          value={selectedAlbum["album artists"]}
+                          suggestions={Object.keys(editor.rewriting[structuredCircle]?.["all album artists"] ?? {})}
+                          onCommit={(next) =>
+                            commitStructured((draft) => {
+                              draft.structured[structuredCircle].albums[structuredAlbum]["album artists"] = next;
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                    <ReadonlyTagList
+                      label="Album artists (after rewriting)"
+                      values={selectedAlbumArtistsAfterRewriting}
                     />
                   </div>
 
@@ -559,7 +680,7 @@ export function App() {
                           discIndex={discIndex}
                           structuredCircle={structuredCircle}
                           structuredAlbum={structuredAlbum}
-                              commitStructured={commitStructured}
+                          commitStructured={commitStructured}
                         >
                           {Object.entries(disc.tracks).map(([trackPath, track]) => (
                             <TrackEditor
@@ -569,6 +690,25 @@ export function App() {
                               artistSuggestions={Object.keys(
                                 editor.rewriting[structuredCircle]?.["all artists"] ?? {},
                               )}
+                              artistsAfterRewriting={rewriteMetadataValues(
+                                track.artists,
+                                editor.rewriting,
+                                structuredCircle,
+                                "artists rewriting",
+                              )}
+                              genreAfterRewriting={rewriteMetadataGenre(
+                                track.genre,
+                                editor.rewriting,
+                                structuredCircle,
+                              )}
+                              highlightedField={
+                                highlightTarget?.circle === structuredCircle &&
+                                highlightTarget.album === structuredAlbum &&
+                                "trackPath" in highlightTarget &&
+                                highlightTarget.trackPath === trackPath
+                                  ? highlightTarget.field
+                                  : undefined
+                              }
                               onCommit={(nextTrack) =>
                                 commitStructured((draft) => {
                                   draft.structured[structuredCircle].albums[structuredAlbum].discs[
@@ -612,23 +752,29 @@ export function App() {
                     <option value="genre rewriting">genre rewriting</option>
                   </select>
                 </label>
-                <button
-                  type="button"
-                  onClick={() =>
-                    commitRewriting((draft) => {
-                      draft[rewritingCircle][rewritingTarget].push({ from: [], to: [] });
-                    })
-                  }
-                >
-                  Add rule
-                </button>
+                {rewritingCircle !== "$all" && rewritingCircleData ? (
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      checked={rewritingCircleData.audited === true}
+                      onChange={(event) =>
+                        void onAuditedChange(event.currentTarget.checked)
+                      }
+                    />
+                    <span>Audited</span>
+                  </label>
+                ) : null}
               </div>
               <div className="split rewrite-split">
                 <div className="card">
-                  <h3>Names</h3>
+                  <h3>{rewritingNameHeader}</h3>
                   <div className="list names-list">
                     {rewritingNameEntries.map((entry) => (
-                      <div className="name-row" key={entry.name}>
+                      <div
+                        className="name-row"
+                        key={entry.name}
+                        onDoubleClick={() => revealRewrittenName(entry.name)}
+                      >
                         <span>{entry.name}</span>
                         {entry.count !== undefined ? (
                           <span className="name-count">{entry.count}</span>
@@ -688,6 +834,16 @@ export function App() {
                       );
                     })}
                   </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      commitRewriting((draft) => {
+                        draft[rewritingCircle][rewritingTarget].push({ from: [], to: [] });
+                      })
+                    }
+                  >
+                    Add rule
+                  </button>
                 </div>
               </div>
             </div>
@@ -733,9 +889,20 @@ function TrackEditor(props: {
   trackPath: string;
   track: TrackStructured;
   artistSuggestions: string[];
+  artistsAfterRewriting: string[];
+  genreAfterRewriting?: string;
+  highlightedField?: "artists" | "genre";
   onCommit: (track: TrackStructured) => void;
 }) {
-  const { trackPath, track, artistSuggestions, onCommit } = props;
+  const {
+    trackPath,
+    track,
+    artistSuggestions,
+    artistsAfterRewriting,
+    genreAfterRewriting,
+    highlightedField,
+    onCommit,
+  } = props;
   return (
     <div className="card">
       <div className="muted">{trackPath}</div>
@@ -751,13 +918,18 @@ function TrackEditor(props: {
           }}
         />
       </label>
-      <div className="field-group">
-        <div className="field-label">Artists</div>
-        <TagInput
-          value={track.artists}
-          suggestions={artistSuggestions}
-          onCommit={(artists) => onCommit({ ...track, artists })}
-        />
+      <div className="metadata-field-pair">
+        <div className="field-group">
+          <div className="field-label">Artists</div>
+          <div className={highlightedField === "artists" ? "metadata-field-highlight" : undefined}>
+            <TagInput
+              value={track.artists}
+              suggestions={artistSuggestions}
+              onCommit={(artists) => onCommit({ ...track, artists })}
+            />
+          </div>
+        </div>
+        <ReadonlyTagList label="Artists (after rewriting)" values={artistsAfterRewriting} />
       </div>
       <div className="row">
         <label>
@@ -783,13 +955,20 @@ function TrackEditor(props: {
             onBlur={(event) => onCommit({ ...track, date: event.currentTarget.value || undefined })}
           />
         </label>
+      </div>
+      <div className="metadata-field-pair">
         <label>
           <div className="field-label">Genre</div>
           <input
+            className={highlightedField === "genre" ? "metadata-field-highlight" : undefined}
             defaultValue={track.genre ?? ""}
             onBlur={(event) => onCommit({ ...track, genre: event.currentTarget.value || undefined })}
           />
         </label>
+        <ReadonlyTagList
+          label="Genre (after rewriting)"
+          values={genreAfterRewriting ? [genreAfterRewriting] : []}
+        />
       </div>
     </div>
   );
@@ -843,6 +1022,25 @@ function ImportPanel(props: {
   );
 }
 
+function ReadonlyTagList(props: { label: string; values: string[] }) {
+  return (
+    <div className="field-group">
+      <div className="field-label">{props.label}</div>
+      <div className="readonly-tag-list" aria-readonly="true">
+        {props.values.length > 0 ? (
+          props.values.map((value) => (
+            <span className="readonly-tag" key={value}>
+              {value}
+            </span>
+          ))
+        ) : (
+          <span className="muted">None</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function getNameEntriesForTarget(
   circle: CircleRewriting | undefined,
   target: RewritingTarget,
@@ -857,6 +1055,140 @@ function getNameEntriesForTarget(
     return entriesFromCounts(circle["all album artists"]);
   }
   return circle["all genres"].map((name) => ({ name }));
+}
+
+function getNameHeaderForTarget(target: RewritingTarget): string {
+  if (target === "artists rewriting") {
+    return "All Artists";
+  }
+  if (target === "album artists rewriting") {
+    return "All Album Artists";
+  }
+  return "All Genres";
+}
+
+function firstNonGlobalRewritingCircle(rewriting: RewritingData): string {
+  return (
+    Object.keys(rewriting)
+      .filter((circle) => circle !== "$all")
+      .sort((a, b) => a.localeCompare(b))[0] ?? ""
+  );
+}
+
+function firstAlbumName(structured: StructuredData, circle: string): string {
+  return (
+    Object.keys(structured[circle]?.albums ?? {}).sort((a, b) => a.localeCompare(b))[0] ?? ""
+  );
+}
+
+function mergeAuditLogs(previous: AuditLog, next: AuditLog): AuditLog {
+  const merged: AuditLog = structuredClone(previous);
+  for (const [code, lines] of Object.entries(next)) {
+    const current = (merged[code] ??= []);
+    for (const line of lines) {
+      if (!current.includes(line)) {
+        current.push(line);
+      }
+    }
+  }
+  return merged;
+}
+
+function findFirstRewrittenNameTarget(
+  structured: StructuredData,
+  rewriting: RewritingData,
+  selectedCircle: string,
+  target: RewritingTarget,
+  name: string,
+): HighlightTarget | undefined {
+  const circleNames =
+    selectedCircle && selectedCircle !== "$all"
+      ? [selectedCircle]
+      : Object.keys(structured).sort((a, b) => a.localeCompare(b));
+  for (const circleName of circleNames) {
+    const circle = structured[circleName];
+    const circleRules = rewriting[circleName];
+    if (!circle || !circleRules) {
+      continue;
+    }
+    const globalRules = rewriting.$all;
+    if (target === "album artists rewriting") {
+      const lookup = compileRewriteLookup([
+        ...circleRules["album artists rewriting"],
+        ...(globalRules?.["album artists rewriting"] ?? []),
+      ]);
+      for (const [albumName, album] of Object.entries(circle.albums)) {
+        if (rewriteValues(album["album artists"], lookup).includes(name)) {
+          return { circle: circleName, album: albumName, field: "album artists" };
+        }
+      }
+      continue;
+    }
+    if (target === "artists rewriting") {
+      const lookup = compileRewriteLookup([
+        ...circleRules["artists rewriting"],
+        ...(globalRules?.["artists rewriting"] ?? []),
+      ]);
+      for (const [albumName, album] of Object.entries(circle.albums)) {
+        for (const disc of album.discs) {
+          for (const [trackPath, track] of Object.entries(disc.tracks)) {
+            if (rewriteValues(track.artists, lookup).includes(name)) {
+              return { circle: circleName, album: albumName, trackPath, field: "artists" };
+            }
+          }
+        }
+      }
+      continue;
+    }
+    const lookup = compileRewriteLookup([
+      ...circleRules["genre rewriting"],
+      ...(globalRules?.["genre rewriting"] ?? []),
+    ]);
+    for (const [albumName, album] of Object.entries(circle.albums)) {
+      for (const disc of album.discs) {
+        for (const [trackPath, track] of Object.entries(disc.tracks)) {
+          const initial = track.genre ?? circleRules["default genre"] ?? globalRules?.["default genre"];
+          if (initial && (lookup.get(initial)?.[0] ?? initial) === name) {
+            return { circle: circleName, album: albumName, trackPath, field: "genre" };
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function rewriteValues(values: string[], lookup: Map<string, string[]>): string[] {
+  return values.flatMap((value) => lookup.get(value) ?? [value]);
+}
+
+function rewriteMetadataValues(
+  values: string[],
+  rewriting: RewritingData,
+  circle: string,
+  target: Extract<RewritingTarget, "artists rewriting" | "album artists rewriting">,
+): string[] {
+  const circleRules = rewriting[circle]?.[target] ?? [];
+  const globalRules = rewriting.$all?.[target] ?? [];
+  return rewriteValues(values, compileRewriteLookup([...circleRules, ...globalRules]));
+}
+
+function rewriteMetadataGenre(
+  genre: string | undefined,
+  rewriting: RewritingData,
+  circle: string,
+): string | undefined {
+  const circleRules = rewriting[circle];
+  const globalRules = rewriting.$all;
+  const initial = genre ?? circleRules?.["default genre"] ?? globalRules?.["default genre"];
+  if (!initial) {
+    return undefined;
+  }
+  const lookup = compileRewriteLookup([
+    ...(circleRules?.["genre rewriting"] ?? []),
+    ...(globalRules?.["genre rewriting"] ?? []),
+  ]);
+  return lookup.get(initial)?.[0] ?? initial;
 }
 
 function entriesFromCounts(counts: Record<string, number>): { name: string; count: number }[] {
