@@ -67,6 +67,7 @@ export function App() {
   const [highlightTarget, setHighlightTarget] = useState<HighlightTarget | undefined>(
     undefined,
   );
+  const [isEditingAlbumName, setIsEditingAlbumName] = useState(false);
 
   const discListRef = useRef<HTMLDivElement | null>(null);
   const rulesRef = useRef<HTMLDivElement | null>(null);
@@ -234,6 +235,7 @@ export function App() {
     }
     discSortableRef.current = Sortable.create(discListRef.current, {
       animation: 120,
+      handle: ".disc-drag-handle",
       onEnd: ({ oldIndex, newIndex }: SortableEvent) => {
         if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) {
           return;
@@ -259,7 +261,7 @@ export function App() {
     }
     ruleSortableRef.current = Sortable.create(rulesRef.current, {
       animation: 120,
-      handle: ".rule-header",
+      handle: ".rule-drag-handle",
       onEnd: ({ oldIndex, newIndex }: SortableEvent) => {
         if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) {
           return;
@@ -513,6 +515,21 @@ export function App() {
     }
   }
 
+  function renameStructuredAlbum(rawName: string): void {
+    const nextName = rawName.trim();
+    setIsEditingAlbumName(false);
+    if (!nextName || nextName === structuredAlbum) {
+      return;
+    }
+    commitStructured((draft) => {
+      const albums = draft.structured[structuredCircle].albums;
+      const payload = albums[structuredAlbum];
+      delete albums[structuredAlbum];
+      albums[nextName] = payload;
+    });
+    setStructuredAlbum(nextName);
+  }
+
   function revealRewrittenName(name: string): void {
     if (!editor) {
       return;
@@ -706,13 +723,9 @@ export function App() {
           </div>
           {tab === "structured" ? (
             <div className="editor-view metadata-panel">
-              <div className="panel-header">
-                <h2>Album Metadata</h2>
-                <div className="muted">{albumNames.length} albums in this circle</div>
-              </div>
               <div className="metadata-layout">
                 <aside className="metadata-sidebar">
-                  <div className="toolbar section-toolbar metadata-nav">
+                  <div className="metadata-nav">
                     <label>
                       Circle
                       <select
@@ -750,29 +763,28 @@ export function App() {
 
                 {selectedAlbum && structuredCircleData && (
                   <div className="list metadata-editor">
-                  <label className="wide-field">
-                    <div className="field-label">Album name</div>
-                    <input
-                      className="grow"
-                      defaultValue={structuredAlbum}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter") {
-                          return;
-                        }
-                        const nextName = (event.currentTarget.value || "").trim();
-                        if (!nextName || nextName === structuredAlbum) {
-                          return;
-                        }
-                        commitStructured((draft) => {
-                          const albums = draft.structured[structuredCircle].albums;
-                          const payload = albums[structuredAlbum];
-                          delete albums[structuredAlbum];
-                          albums[nextName] = payload;
-                        });
-                        setStructuredAlbum(nextName);
-                      }}
-                    />
-                  </label>
+                  <div className="album-title-cell">
+                    {isEditingAlbumName ? (
+                      <input
+                        className="album-title-input"
+                        defaultValue={structuredAlbum}
+                        autoFocus
+                        onBlur={(event) => renameStructuredAlbum(event.currentTarget.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            renameStructuredAlbum(event.currentTarget.value);
+                          }
+                          if (event.key === "Escape") {
+                            setIsEditingAlbumName(false);
+                          }
+                        }}
+                      />
+                    ) : (
+                      <h2 className="album-title" onDoubleClick={() => setIsEditingAlbumName(true)}>
+                        {structuredAlbum}
+                      </h2>
+                    )}
+                  </div>
 
                   <div className="metadata-field-pair">
                     <div className="field-group">
@@ -805,81 +817,99 @@ export function App() {
 
                   <div className="list" ref={discListRef}>
                     {selectedAlbum.discs.map((disc, discIndex) => (
-                      <div className="disc-section" key={`${discIndex}-${Object.keys(disc.tracks).join(":")}`}>
-                        <div className="disc-header">
-                          <label>
-                            Disc subtitle
-                            <input
-                              defaultValue={disc.$subtitle ?? ""}
-                              onBlur={(event) =>
-                                commitStructured((draft) => {
-                                  const value = event.currentTarget.value.trim();
-                                  draft.structured[structuredCircle].albums[structuredAlbum].discs[
-                                    discIndex
-                                  ].$subtitle = value || undefined;
-                                })
-                              }
-                            />
-                          </label>
-                          <label className="checkbox-label">
-                            <input
-                              type="checkbox"
-                              checked={disc["$track numbers from order"] === true}
-                              onChange={(event) =>
-                                commitStructured((draft) => {
-                                  draft.structured[structuredCircle].albums[structuredAlbum].discs[
-                                    discIndex
-                                  ]["$track numbers from order"] = event.currentTarget.checked;
-                                })
-                              }
-                            />
-                            <span>Update track numbers from track order</span>
-                          </label>
+                      <div
+                        className={`disc-section${selectedAlbum.discs.length > 1 ? " disc-section-draggable" : ""}`}
+                        key={`${discIndex}-${Object.keys(disc.tracks).join(":")}`}
+                      >
+                        {selectedAlbum.discs.length > 1 ? (
+                          <div
+                            className="disc-drag-handle"
+                            aria-label={`Drag disc ${discIndex + 1} to reorder`}
+                            title={`Drag disc ${discIndex + 1} to reorder`}
+                          >
+                            <span />
+                          </div>
+                        ) : null}
+                        <div className="disc-content">
+                          {selectedAlbum.discs.length > 1 ? (
+                            <h2 className="disc-title">Disc {discIndex + 1}</h2>
+                          ) : null}
+                          <div className="disc-header">
+                            <label>
+                              Disc subtitle
+                              <input
+                                defaultValue={disc.$subtitle ?? ""}
+                                onBlur={(event) =>
+                                  commitStructured((draft) => {
+                                    const value = event.currentTarget.value.trim();
+                                    draft.structured[structuredCircle].albums[structuredAlbum].discs[
+                                      discIndex
+                                    ].$subtitle = value || undefined;
+                                  })
+                                }
+                              />
+                            </label>
+                            <label className="checkbox-label">
+                              <input
+                                type="checkbox"
+                                checked={disc["$track numbers from order"] === true}
+                                onChange={(event) =>
+                                  commitStructured((draft) => {
+                                    draft.structured[structuredCircle].albums[structuredAlbum].discs[
+                                      discIndex
+                                    ]["$track numbers from order"] = event.currentTarget.checked;
+                                  })
+                                }
+                              />
+                              <span>Update track numbers from track order</span>
+                            </label>
+                          </div>
+                          <div className="tracks-title">Tracks</div>
+                          <DiscTrackList
+                            disc={disc}
+                            discIndex={discIndex}
+                            structuredCircle={structuredCircle}
+                            structuredAlbum={structuredAlbum}
+                            commitStructured={commitStructured}
+                          >
+                            {Object.entries(disc.tracks).map(([trackPath, track]) => (
+                              <TrackEditor
+                                key={trackPath}
+                                trackPath={trackPath}
+                                track={track}
+                                artistSuggestions={Object.keys(
+                                  editor.rewriting[structuredCircle]?.["all artists"] ?? {},
+                                )}
+                                artistsAfterRewriting={rewriteMetadataValues(
+                                  track.artists,
+                                  editor.rewriting,
+                                  structuredCircle,
+                                  "artists rewriting",
+                                )}
+                                genreAfterRewriting={rewriteMetadataGenre(
+                                  track.genre,
+                                  editor.rewriting,
+                                  structuredCircle,
+                                )}
+                                highlightedField={
+                                  highlightTarget?.circle === structuredCircle &&
+                                  highlightTarget.album === structuredAlbum &&
+                                  "trackPath" in highlightTarget &&
+                                  highlightTarget.trackPath === trackPath
+                                    ? highlightTarget.field
+                                    : undefined
+                                }
+                                onCommit={(nextTrack) =>
+                                  commitStructured((draft) => {
+                                    draft.structured[structuredCircle].albums[structuredAlbum].discs[
+                                      discIndex
+                                    ].tracks[trackPath] = nextTrack;
+                                  })
+                                }
+                              />
+                            ))}
+                          </DiscTrackList>
                         </div>
-                        <DiscTrackList
-                          disc={disc}
-                          discIndex={discIndex}
-                          structuredCircle={structuredCircle}
-                          structuredAlbum={structuredAlbum}
-                          commitStructured={commitStructured}
-                        >
-                          {Object.entries(disc.tracks).map(([trackPath, track]) => (
-                            <TrackEditor
-                              key={trackPath}
-                              trackPath={trackPath}
-                              track={track}
-                              artistSuggestions={Object.keys(
-                                editor.rewriting[structuredCircle]?.["all artists"] ?? {},
-                              )}
-                              artistsAfterRewriting={rewriteMetadataValues(
-                                track.artists,
-                                editor.rewriting,
-                                structuredCircle,
-                                "artists rewriting",
-                              )}
-                              genreAfterRewriting={rewriteMetadataGenre(
-                                track.genre,
-                                editor.rewriting,
-                                structuredCircle,
-                              )}
-                              highlightedField={
-                                highlightTarget?.circle === structuredCircle &&
-                                highlightTarget.album === structuredAlbum &&
-                                "trackPath" in highlightTarget &&
-                                highlightTarget.trackPath === trackPath
-                                  ? highlightTarget.field
-                                  : undefined
-                              }
-                              onCommit={(nextTrack) =>
-                                commitStructured((draft) => {
-                                  draft.structured[structuredCircle].albums[structuredAlbum].discs[
-                                    discIndex
-                                  ].tracks[trackPath] = nextTrack;
-                                })
-                              }
-                            />
-                          ))}
-                        </DiscTrackList>
                       </div>
                     ))}
                   </div>
@@ -888,12 +918,8 @@ export function App() {
               </div>
             </div>
           ) : (
-            <div className="editor-view">
-              <div className="panel-header">
-                <h2>Rewrite Rules</h2>
-                <div className="muted">{rewritingRules.length} rules in this target</div>
-              </div>
-              <div className="rewrite-toolbar">
+            <div className="editor-view rewrite-workspace">
+              <aside className="rewrite-sidebar">
                 <label>
                   Circle
                   <select value={rewritingCircle} onChange={(event) => setRewritingCircle(event.target.value)}>
@@ -906,6 +932,28 @@ export function App() {
                       ))}
                   </select>
                 </label>
+                <div className="section-pane names-pane">
+                  <div className="pane-header">
+                    <h3>{rewritingNameHeader}</h3>
+                    <span className="count-badge">{rewritingNameEntries.length}</span>
+                  </div>
+                  <div className="list names-list">
+                    {rewritingNameEntries.map((entry) => (
+                      <div
+                        className="name-row"
+                        key={entry.name}
+                        onDoubleClick={() => revealRewrittenName(entry.name)}
+                      >
+                        <span>{entry.name}</span>
+                        {entry.count !== undefined ? (
+                          <span className="name-count">{entry.count}</span>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </aside>
+              <div className="rewrite-main">
                 <div className="rewrite-toolbar-main">
                   <div className="rewrite-target-tabs" role="tablist" aria-label="Rewrite target">
                     {(
@@ -942,28 +990,6 @@ export function App() {
                     </label>
                   ) : null}
                 </div>
-              </div>
-              <div className="split rewrite-split">
-                <div className="section-pane names-pane">
-                  <div className="pane-header">
-                    <h3>{rewritingNameHeader}</h3>
-                    <span className="count-badge">{rewritingNameEntries.length}</span>
-                  </div>
-                  <div className="list names-list">
-                    {rewritingNameEntries.map((entry) => (
-                      <div
-                        className="name-row"
-                        key={entry.name}
-                        onDoubleClick={() => revealRewrittenName(entry.name)}
-                      >
-                        <span>{entry.name}</span>
-                        {entry.count !== undefined ? (
-                          <span className="name-count">{entry.count}</span>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                </div>
                 <div className="section-pane rules-pane">
                   <div className="pane-header">
                     <h3>Rules</h3>
@@ -983,40 +1009,47 @@ export function App() {
                         className={`card rewrite-rule-card${hasCycleError ? " rewrite-rule-card-error" : ""}`}
                         key={`rule-${index}`}
                       >
-                        <div className="rule-header">
-                          <span>Rule {index + 1}</span>
-                          <span className="drag-handle">Drag to reorder</span>
+                        <div
+                          className="rule-drag-handle"
+                          aria-label={`Drag rule ${index + 1} to reorder`}
+                          title={`Drag rule ${index + 1} to reorder`}
+                        >
+                          <span />
                         </div>
-                        {hasCycleError ? (
-                          <div className="muted validation-hint validation-error">
-                            This rule participates in a rewrite cycle.
+                        <div className="rule-card-body">
+                          <div className="rule-validation-stack">
+                            {hasCycleError ? (
+                              <div className="muted validation-hint validation-error">
+                                This rule participates in a rewrite cycle.
+                              </div>
+                            ) : null}
+                            {rule.from.length === 0 || rule.to.length === 0 ? (
+                              <div className="muted validation-hint">
+                                A rule needs at least one value in both `from` and `to`.
+                              </div>
+                            ) : null}
+                            {rewriteRuleDuplicateCounts.get(getRuleSignature(rule)) && rewriteRuleDuplicateCounts.get(getRuleSignature(rule))! > 1 ? (
+                              <div className="muted validation-hint">
+                                This rule duplicates another rule in the current target.
+                              </div>
+                            ) : null}
                           </div>
-                        ) : null}
-                        {rule.from.length === 0 || rule.to.length === 0 ? (
-                          <div className="muted validation-hint">
-                            A rule needs at least one value in both `from` and `to`.
-                          </div>
-                        ) : null}
-                        {rewriteRuleDuplicateCounts.get(getRuleSignature(rule)) && rewriteRuleDuplicateCounts.get(getRuleSignature(rule))! > 1 ? (
-                          <div className="muted validation-hint">
-                            This rule duplicates another rule in the current target.
-                          </div>
-                        ) : null}
-                        <RuleEditor
-                          rule={rule}
-                          sortGroup={`rule-${index}`}
-                          suggestions={rewritingNameSuggestions}
-                          onRemove={() =>
-                            commitRewriting((draft) => {
-                              draft[rewritingCircle][rewritingTarget].splice(index, 1);
-                            })
-                          }
-                          onChange={(nextRule) =>
-                            commitRewriting((draft) => {
-                              draft[rewritingCircle][rewritingTarget][index] = nextRule;
-                            })
-                          }
-                        />
+                          <RuleEditor
+                            rule={rule}
+                            sortGroup={`rule-${index}`}
+                            suggestions={rewritingNameSuggestions}
+                            onRemove={() =>
+                              commitRewriting((draft) => {
+                                draft[rewritingCircle][rewritingTarget].splice(index, 1);
+                              })
+                            }
+                            onChange={(nextRule) =>
+                              commitRewriting((draft) => {
+                                draft[rewritingCircle][rewritingTarget][index] = nextRule;
+                              })
+                            }
+                          />
+                        </div>
                       </div>
                       );
                     })}
@@ -1097,46 +1130,85 @@ function TrackEditor(props: {
     highlightedField,
     onCommit,
   } = props;
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const trackNumber = Number.isFinite(track["track number"])
+    ? Number(track["track number"])
+    : undefined;
+
+  useEffect(() => {
+    if (isEditingTitle) {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    }
+  }, [isEditingTitle]);
+
+  const commitTitle = (rawTitle: string): void => {
+    onCommit({ ...track, title: rawTitle });
+    setIsEditingTitle(false);
+  };
+
+  const changeTrackNumber = (delta: number): void => {
+    const next = Math.max(1, (trackNumber ?? 1) + delta);
+    onCommit({ ...track, "track number": next });
+  };
+
   return (
     <div className="card track-card">
-      <div className="track-path">{trackPath}</div>
-      <div className="track-title-row">
-        <label className="track-title-field">
-          <div className="field-label">Title</div>
-          <input
-            defaultValue={track.title}
-            onBlur={(event) => onCommit({ ...track, title: event.currentTarget.value })}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                onCommit({ ...track, title: event.currentTarget.value });
-              }
-            }}
-          />
-        </label>
-        <div className="track-number-date-row">
-          <label>
-            <div className="field-label">Track number</div>
+      <div className="track-summary-row">
+        <div
+          className="track-drag-handle"
+          aria-label={`Drag ${track.title || trackPath} to reorder`}
+          title={`Drag ${track.title || trackPath} to reorder`}
+        >
+          <span />
+        </div>
+        <div className="track-title-cell">
+          {isEditingTitle ? (
             <input
-              type="number"
-              defaultValue={track["track number"] ?? ""}
-              onBlur={(event) => {
-                const raw = event.currentTarget.value.trim();
-                const parsed = raw ? Number(raw) : undefined;
-                onCommit({
-                  ...track,
-                  "track number":
-                    parsed !== undefined && Number.isFinite(parsed) ? parsed : undefined,
-                });
+              ref={titleInputRef}
+              className="track-title-input"
+              defaultValue={track.title}
+              onBlur={(event) => commitTitle(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  commitTitle(event.currentTarget.value);
+                }
+                if (event.key === "Escape") {
+                  setIsEditingTitle(false);
+                }
               }}
             />
-          </label>
-          <label>
-            <div className="field-label">Date</div>
-            <input
-              defaultValue={track.date ?? ""}
-              onBlur={(event) => onCommit({ ...track, date: event.currentTarget.value || undefined })}
-            />
-          </label>
+          ) : (
+            <h3 className="track-title" onDoubleClick={() => setIsEditingTitle(true)}>
+              {track.title || "Untitled track"}
+            </h3>
+          )}
+        </div>
+        <input
+          className="track-date-input"
+          aria-label="Date"
+          placeholder="Date"
+          defaultValue={track.date ?? ""}
+          onBlur={(event) => onCommit({ ...track, date: event.currentTarget.value || undefined })}
+        />
+        <div className="track-number-stepper" aria-label="Track number">
+          <button
+            type="button"
+            aria-label="Decrease track number"
+            onClick={() => changeTrackNumber(-1)}
+            disabled={(trackNumber ?? 1) <= 1}
+          >
+            -
+          </button>
+          <span>{trackNumber ? `Track ${trackNumber}` : "Track"}</span>
+          <button
+            type="button"
+            aria-label="Increase track number"
+            onClick={() => changeTrackNumber(1)}
+          >
+            +
+          </button>
         </div>
       </div>
       <div className="metadata-field-pair">
@@ -1165,6 +1237,10 @@ function TrackEditor(props: {
           label="Genre (after rewriting)"
           values={genreAfterRewriting ? [genreAfterRewriting] : []}
         />
+      </div>
+      <div className="track-path-group">
+        <div className="field-label">File path</div>
+        <div className="track-path">{trackPath}</div>
       </div>
     </div>
   );
@@ -1577,6 +1653,7 @@ function DiscTrackList(props: {
     }
     sortableRef.current = Sortable.create(listRef.current, {
       animation: 120,
+      handle: ".track-drag-handle",
       onEnd: ({ oldIndex, newIndex }: SortableEvent) => {
         if (oldIndex === undefined || newIndex === undefined || oldIndex === newIndex) {
           return;
@@ -1620,7 +1697,7 @@ function createDebugMetadata(): Record<string, Record<string, unknown>> {
       "Track number": 1,
       "Total tracks": 3,
       "Disc number": 1,
-      "Total discs": 1,
+      "Total discs": 2,
       Genre: "Touhou",
     },
     "DemoCircle/2024.01.01 - Demo Album/02 - Theme.flac": {
@@ -1633,20 +1710,20 @@ function createDebugMetadata(): Record<string, Record<string, unknown>> {
       "Track number": 2,
       "Total tracks": 3,
       "Disc number": 1,
-      "Total discs": 1,
+      "Total discs": 2,
       Genre: "Arrange",
     },
-    "DemoCircle/2024.01.01 - Demo Album/03 - Encore.flac": {
+    "DemoCircle/2024.01.01 - Demo Album/Disc 2/01 - Encore.flac": {
       Title: "Encore",
       Artists: ["Ａｌｉｃｅ"],
       Date: "2024.01.01",
       Year: "2024",
       "Album artists": ["Demo Circle"],
       "Album title": "Demo Album",
-      "Track number": 3,
-      "Total tracks": 3,
-      "Disc number": 1,
-      "Total discs": 1,
+      "Track number": 1,
+      "Total tracks": 1,
+      "Disc number": 2,
+      "Total discs": 2,
       Genre: "Touhou",
     },
   };
@@ -1661,6 +1738,10 @@ function RuleEditor(props: {
 }) {
   const { rule, suggestions, sortGroup, onRemove, onChange } = props;
   const [toDraft, setToDraft] = useState("");
+  const draggingTagRef = useRef<{ side: "from" | "to"; index: number } | undefined>(
+    undefined,
+  );
+  const handledTagDropRef = useRef(false);
 
   const addToTag = (): void => {
     const normalized = toDraft.trim();
@@ -1704,13 +1785,35 @@ function RuleEditor(props: {
     source: { side: "from" | "to"; index: number },
   ): void => {
     event.stopPropagation();
+    draggingTagRef.current = source;
+    handledTagDropRef.current = false;
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/x-tlmc-rewrite-tag", JSON.stringify(source));
     event.dataTransfer.setData("text/plain", JSON.stringify(source));
   };
 
+  const finishTagDrag = (event: React.DragEvent<HTMLSpanElement>): void => {
+    event.stopPropagation();
+    if (handledTagDropRef.current || !draggingTagRef.current) {
+      draggingTagRef.current = undefined;
+      handledTagDropRef.current = false;
+      return;
+    }
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const side = target?.closest(".rule-from-list")
+      ? "from"
+      : target?.closest(".rule-to-list")
+        ? "to"
+        : undefined;
+    if (side) {
+      moveTag(draggingTagRef.current, side);
+    }
+    draggingTagRef.current = undefined;
+    handledTagDropRef.current = false;
+  };
+
   const dropTag = (
-    event: React.DragEvent<HTMLDivElement>,
+    event: React.DragEvent<HTMLElement>,
     toSide: "from" | "to",
   ): void => {
     event.preventDefault();
@@ -1725,13 +1828,14 @@ function RuleEditor(props: {
     if (!source) {
       return;
     }
+    handledTagDropRef.current = true;
     moveTag(source, toSide);
   };
 
   return (
     <div className="rule-tag-editor">
       <div
-        className="tag-chip-list"
+        className="tag-chip-list rule-from-list"
         onDragOver={(event) => {
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
@@ -1745,6 +1849,12 @@ function RuleEditor(props: {
             data-tag={tag}
             draggable
             onDragStart={(event) => startTagDrag(event, { side: "from", index })}
+            onDragEnd={finishTagDrag}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(event) => dropTag(event, "from")}
             key={`${sortGroup}-from-${tag}-${index}`}
           >
             {tag}
@@ -1760,7 +1870,7 @@ function RuleEditor(props: {
         ))}
       </div>
       <div
-        className="tag-chip-list"
+        className="tag-chip-list rule-to-list"
         onDragOver={(event) => {
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
@@ -1774,6 +1884,12 @@ function RuleEditor(props: {
             data-tag={tag}
             draggable
             onDragStart={(event) => startTagDrag(event, { side: "to", index })}
+            onDragEnd={finishTagDrag}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(event) => dropTag(event, "to")}
             key={`${sortGroup}-to-${tag}-${index}`}
           >
             {tag}
@@ -1788,24 +1904,26 @@ function RuleEditor(props: {
           </span>
         ))}
       </div>
-      <div className="row rule-actions">
-        <input
-          list={`suggestions-${sortGroup}`}
-          value={toDraft}
-          placeholder="Add name..."
-          onChange={(event) => setToDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              addToTag();
-            }
-          }}
-        />
-        <button type="button" onClick={addToTag}>
-          Add name
-        </button>
-        <button type="button" className="rule-remove-button" onClick={onRemove}>
-          Remove
+      <div className="rule-actions">
+        <div className="add-name-control">
+          <input
+            list={`suggestions-${sortGroup}`}
+            value={toDraft}
+            placeholder="Add name..."
+            onChange={(event) => setToDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addToTag();
+              }
+            }}
+          />
+          <button type="button" aria-label="Add name" onClick={addToTag}>
+            +
+          </button>
+        </div>
+        <button type="button" className="rule-remove-button" aria-label="Remove rule" onClick={onRemove}>
+          x
         </button>
       </div>
       <datalist id={`suggestions-${sortGroup}`}>
